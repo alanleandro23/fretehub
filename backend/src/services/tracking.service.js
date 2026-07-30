@@ -316,8 +316,30 @@ async function createTracking(data, user) {
     throw new Error('Informe pelo menos Nota Fiscal, Pedido ou Conhecimento/CT-e.');
   }
 
-  if (getDefinition(carrier)?.key === 'jamef' && !data.notaFiscal && !data.numeroNota && !data.conhecimento) {
+  const carrierDefinition = getDefinition(carrier);
+
+  if (carrierDefinition?.key === 'jamef' && !data.notaFiscal && !data.numeroNota && !data.conhecimento) {
     throw new Error('Para a Jamef, informe a Nota Fiscal ou o Conhecimento/CT-e.');
+  }
+
+  if (carrierDefinition?.key === 'braspress') {
+    const cnpjTomador = onlyNumbers(data.documento);
+    if (cnpjTomador.length !== 14) {
+      throw new Error('Para a Braspress, informe o CNPJ do tomador do frete com 14 dígitos.');
+    }
+    if (!data.notaFiscal && !data.numeroNota && !data.pedido && !data.numeroPedido) {
+      throw new Error('Para a Braspress, informe a Nota Fiscal ou o número do Pedido.');
+    }
+  }
+
+  if (carrierDefinition?.key === 'camilo') {
+    const cnpjRemetenteOuPagador = onlyNumbers(data.documento);
+    if (cnpjRemetenteOuPagador.length !== 14) {
+      throw new Error('Para a Camilo, informe o CNPJ do remetente ou pagador com 14 dígitos.');
+    }
+    if (!data.notaFiscal && !data.numeroNota && !data.pedido && !data.numeroPedido) {
+      throw new Error('Para a Camilo, informe a Nota Fiscal ou o número do Pedido.');
+    }
   }
 
   const checkIntervalMinutes = TRACKING_INTERVAL_MINUTES;
@@ -717,6 +739,16 @@ function isLegacyGenericTransitEvent(event = {}) {
   );
 }
 
+function isLegacyProviderSummaryEvent(event = {}) {
+  const details = eventSourceDetails(event);
+  const sourceKey = normalizeEventText(details.sourceKey);
+
+  // Antes de a API devolver a timeline detalhada, o sistema registrava
+  // somente a ultimaOcorrencia como um evento resumido. Quando os eventos
+  // reais chegam, esse cartão precisa sair para não duplicar a timeline.
+  return sourceKey.includes('ULTIMAOCORRENCIA');
+}
+
 async function cleanupLegacyTimelineEvents(trackingId, hasDetailedEvents) {
   const events = await prisma.shipmentEvent.findMany({
     where: { trackingId },
@@ -731,7 +763,10 @@ async function cleanupLegacyTimelineEvents(trackingId, hasDetailedEvents) {
       if (['CRIADO', 'CADASTRO_MANUAL', 'CADASTRO MANUAL'].includes(type)) return false;
 
       if (isInvalidCarrierOccurrence(event)) return true;
-      return hasDetailedEvents && isLegacyGenericTransitEvent(event);
+      if (!hasDetailedEvents) return false;
+
+      return isLegacyGenericTransitEvent(event) ||
+        isLegacyProviderSummaryEvent(event);
     })
     .map((event) => event.id);
 
@@ -941,6 +976,9 @@ async function checkTrackingNow(id, user = null) {
       where: { id: tracking.id },
       data: {
         status,
+        numeroNota: scalarText(realTracking.notaFiscal) || tracking.numeroNota,
+        numeroPedido: scalarText(realTracking.pedido) || tracking.numeroPedido,
+        conhecimento: scalarText(realTracking.conhecimento) || tracking.conhecimento,
         previsaoEntrega: parseDate(realTracking.previsaoEntrega) || tracking.previsaoEntrega,
         dataEntrega: deliveryDate,
         cidadeDestino: scalarText(realTracking.cidade) || tracking.cidadeDestino,

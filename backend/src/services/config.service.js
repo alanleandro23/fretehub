@@ -6,6 +6,7 @@ const TRACKING_INTERVAL_MINUTES = 60;
 const PUBLIC_KEYS = [
   'JAMEF_TRACKING_URL',
   'BRASPRESS_TRACKING_URL',
+  'CAMILO_TRACKING_URL',
   'EMAIL_NOTIFICATIONS_ENABLED',
   'EMAIL_FROM',
   'APP_URL',
@@ -88,6 +89,7 @@ async function getTrackingAdminConfig() {
   const [
     jamefTrackingUrl,
     braspressTrackingUrl,
+    camiloTrackingUrl,
     emailEnabled,
     emailFrom,
     appUrl,
@@ -97,6 +99,7 @@ async function getTrackingAdminConfig() {
   ] = await Promise.all([
     getConfigValue('JAMEF_TRACKING_URL', ''),
     getConfigValue('BRASPRESS_TRACKING_URL', ''),
+    getConfigValue('CAMILO_TRACKING_URL', 'https://ssw.inf.br/2/ssw_resultSSW'),
     getConfigValue('EMAIL_NOTIFICATIONS_ENABLED', 'true'),
     getConfigValue('EMAIL_FROM', 'FreteHub'),
     getConfigValue('APP_URL', ''),
@@ -109,8 +112,10 @@ async function getTrackingAdminConfig() {
     intervalMinutes: TRACKING_INTERVAL_MINUTES,
     jamefTrackingUrl,
     braspressTrackingUrl,
+    camiloTrackingUrl,
     jamefTrackingConfigured: Boolean(String(jamefTrackingUrl).trim()),
     braspressTrackingConfigured: Boolean(String(braspressTrackingUrl).trim()),
+    camiloTrackingConfigured: Boolean(String(camiloTrackingUrl).trim()),
     emailNotificationsEnabled: normalizeBoolean(emailEnabled, true),
     emailFrom,
     appUrl,
@@ -132,6 +137,7 @@ async function updateTrackingAdminConfig(data = {}, user) {
   const updates = {
     JAMEF_TRACKING_URL: validateOptionalUrl(data.jamefTrackingUrl, 'URL de tracking da Jamef'),
     BRASPRESS_TRACKING_URL: validateOptionalUrl(data.braspressTrackingUrl, 'URL de tracking da Braspress'),
+    CAMILO_TRACKING_URL: validateOptionalUrl(data.camiloTrackingUrl, 'URL de tracking da Camilo/SSW'),
     EMAIL_NOTIFICATIONS_ENABLED: String(normalizeBoolean(data.emailNotificationsEnabled, true)),
     EMAIL_FROM: String(data.emailFrom || '').trim(),
     APP_URL: validateOptionalUrl(data.appUrl, 'URL da plataforma'),

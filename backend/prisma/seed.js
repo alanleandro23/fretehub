@@ -7,6 +7,37 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
+const carriers = [
+  {
+    nome: 'Jamef',
+    tipoIntegracao: 'API',
+    ambientePadrao: 'HOMOLOGACAO',
+    ativo: true
+  },
+  {
+    nome: 'Braspress',
+    tipoIntegracao: 'API',
+    ambientePadrao: 'PRODUCAO',
+    apiUrl: 'https://api.braspress.com',
+    ativo: true
+  },
+  {
+    nome: 'Correios',
+    tipoIntegracao: 'API',
+    ambientePadrao: 'HOMOLOGACAO',
+    ativo: true
+  },
+  {
+    nome: 'Camilo',
+    tipoIntegracao: 'API',
+    ambientePadrao: 'PRODUCAO',
+    apiUrl: 'https://ssw.inf.br/ws/sswCotacaoCliente/index.php',
+    portalUrl: 'https://ssw.inf.br/ws/sswCotacaoCliente/help.html',
+    observacoes: 'Cotação via webservice SSW e tracking automático pelo portal SSW.',
+    ativo: true
+  }
+];
+
 async function main() {
   await prisma.user.upsert({
     where: { email: 'admin@fretehub.com' },
@@ -24,16 +55,11 @@ async function main() {
     }
   });
 
-  for (const nome of ['Jamef', 'Braspress', 'Correios', 'Movvi', 'Camilo', 'Generoso']) {
+  for (const carrier of carriers) {
     await prisma.carrier.upsert({
-      where: { nome },
-      update: {},
-      create: {
-        nome,
-        tipoIntegracao: 'API',
-        ambientePadrao: 'HOMOLOGACAO',
-        ativo: true
-      }
+      where: { nome: carrier.nome },
+      update: carrier,
+      create: carrier
     });
   }
 }

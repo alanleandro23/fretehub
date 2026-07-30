@@ -382,3 +382,18 @@ button:disabled{opacity:.65;cursor:not-allowed}
     display: block;
   }
 }
+
+/* Timeline: mantém título, data e rota em linhas separadas. */
+.timelineTitle {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.timelineCard p {
+  margin: 0 0 8px;
+}
+
+.timelineCard small {
+  display: inline-block;
+  margin-top: 2px;
+}

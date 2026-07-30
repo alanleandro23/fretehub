@@ -80,26 +80,18 @@ const definitions = [
     matches: ['camilo'],
     service: camilo,
     enabledEnv: 'CAMILO_API_ENABLED',
+    strictDisable: true,
     credentialReady(credential) {
-      return Boolean(
-        hasUser(credential) &&
-        hasPassword(credential) &&
-        hasToken(credential) &&
-        String(credential?.codigoCliente || '').trim()
-      );
+      return hasUser(credential) && hasPassword(credential) && hasToken(credential);
     },
     envCredentialReady() {
       return Boolean(
         hasEnvUserPassword('CAMILO') &&
-        String(process.env.CAMILO_PAYER_PASSWORD || '').trim() &&
-        String(process.env.CAMILO_DOMAIN || '').trim()
+        String(process.env.CAMILO_PAYER_PASSWORD || '').trim()
       );
     },
-    async trackingReady() {
-      return Boolean(String(await getConfigValue(
-        'CAMILO_TRACKING_URL',
-        'https://ssw.inf.br/2/ssw_resultSSW'
-      )).trim());
+    trackingReady() {
+      return false;
     }
   },
   {

@@ -80,6 +80,7 @@ const definitions = [
     matches: ['camilo'],
     service: camilo,
     enabledEnv: 'CAMILO_API_ENABLED',
+    strictDisable: true,
     credentialReady(credential) {
       return Boolean(
         hasUser(credential) &&
@@ -95,11 +96,8 @@ const definitions = [
         String(process.env.CAMILO_DOMAIN || '').trim()
       );
     },
-    async trackingReady() {
-      return Boolean(String(await getConfigValue(
-        'CAMILO_TRACKING_URL',
-        'https://ssw.inf.br/2/ssw_resultSSW'
-      )).trim());
+    trackingReady() {
+      return false;
     }
   },
   {

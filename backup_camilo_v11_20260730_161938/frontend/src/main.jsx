@@ -905,15 +905,6 @@ function Credentials() {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
 
-  const selectedCarrier = carriers.find(
-    (carrier) => Number(carrier.id) === Number(form.carrierId)
-  );
-  const isCamiloCredential = String(selectedCarrier?.nome || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .includes('camilo');
-
   async function load() {
     const [credentialsResponse, companiesResponse, carriersResponse] = await Promise.all([
       api.get('/carrier-credentials'),
@@ -992,18 +983,12 @@ function Credentials() {
           </select>
         </label>
 
-        <label className="fieldLabel">{isCamiloCredential ? 'Usuário SSW' : 'Usuário'}<input value={form.usuario} onChange={(e) => setForm({ ...form, usuario: e.target.value })} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Senha do usuário SSW' : 'Senha'}<input type="password" value={form.senha} onChange={(e) => setForm({ ...form, senha: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Senha do pagador' : 'Token'}<input type="password" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Domínio SSW' : 'Código do cliente'}<input value={form.codigoCliente} onChange={(e) => setForm({ ...form, codigoCliente: e.target.value })} maxLength={isCamiloCredential ? 3 : undefined} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Código da mercadoria (opcional)' : 'Contrato'}<input value={form.contrato} onChange={(e) => setForm({ ...form, contrato: e.target.value })} placeholder={isCamiloCredential ? 'Padrão: 1' : ''} /></label>
+        <label className="fieldLabel">Usuário<input value={form.usuario} onChange={(e) => setForm({ ...form, usuario: e.target.value })} /></label>
+        <label className="fieldLabel">Senha<input type="password" value={form.senha} onChange={(e) => setForm({ ...form, senha: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
+        <label className="fieldLabel">Token<input type="password" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
+        <label className="fieldLabel">Código do cliente<input value={form.codigoCliente} onChange={(e) => setForm({ ...form, codigoCliente: e.target.value })} /></label>
+        <label className="fieldLabel">Contrato<input value={form.contrato} onChange={(e) => setForm({ ...form, contrato: e.target.value })} /></label>
         <label className="fieldLabel">CNPJ vinculado<input value={form.cnpjVinculado} onChange={(e) => setForm({ ...form, cnpjVinculado: e.target.value.replace(/\D/g, '') })} maxLength="14" /></label>
-
-        {isCamiloCredential && (
-          <div className="infoBox fieldSpan">
-            A Camilo usa o SSW: Domínio SSW, usuário, senha do usuário e senha do pagador. O CNPJ do pagador é definido pelo tipo de frete da cotação.
-          </div>
-        )}
         <label className="fieldLabel">Status
           <select value={String(form.ativo)} onChange={(e) => setForm({ ...form, ativo: e.target.value === 'true' })}><option value="true">Ativa</option><option value="false">Inativa</option></select>
         </label>
@@ -2406,7 +2391,6 @@ function TrackingPage({ user }) {
   const [configForm, setConfigForm] = useState({
     jamefTrackingUrl: '',
     braspressTrackingUrl: '',
-    camiloTrackingUrl: 'https://ssw.inf.br/2/ssw_resultSSW',
     emailNotificationsEnabled: true,
     emailFrom: '',
     appUrl: '',
@@ -2469,7 +2453,6 @@ function TrackingPage({ user }) {
         ...current,
         jamefTrackingUrl: data.jamefTrackingUrl || '',
         braspressTrackingUrl: data.braspressTrackingUrl || '',
-        camiloTrackingUrl: data.camiloTrackingUrl || 'https://ssw.inf.br/2/ssw_resultSSW',
         emailNotificationsEnabled: data.emailNotificationsEnabled !== false,
         emailFrom: data.emailFrom || '',
         appUrl: data.appUrl || '',
@@ -2559,7 +2542,7 @@ function TrackingPage({ user }) {
       });
 
     return () => { active = false; };
-  }, [form.companyId, adminConfig?.jamefTrackingConfigured, adminConfig?.braspressTrackingConfigured, adminConfig?.camiloTrackingConfigured]);
+  }, [form.companyId, adminConfig?.jamefTrackingConfigured, adminConfig?.braspressTrackingConfigured]);
 
   async function searchTracking(event) {
     event.preventDefault();
@@ -2586,12 +2569,11 @@ function TrackingPage({ user }) {
     const selectedCarrier = carriers.find(
       (carrier) => String(carrier.id) === String(form.carrierId)
     );
-    const normalizedCarrierName = String(selectedCarrier?.nome || '')
+    const isBraspress = String(selectedCarrier?.nome || '')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase();
-    const isBraspress = normalizedCarrierName.includes('braspress');
-    const isCamilo = normalizedCarrierName.includes('camilo');
+      .toLowerCase()
+      .includes('braspress');
 
     if (isBraspress) {
       const cnpjTomador = String(form.documento || '').replace(/\D/g, '');
@@ -2602,16 +2584,6 @@ function TrackingPage({ user }) {
 
       if (!form.notaFiscal && !form.pedido) {
         return alert('Para a Braspress, informe a Nota Fiscal ou o número do Pedido.');
-      }
-    } else if (isCamilo) {
-      const cnpjRemetenteOuPagador = String(form.documento || '').replace(/\D/g, '');
-
-      if (cnpjRemetenteOuPagador.length !== 14) {
-        return alert('Para a Camilo, informe o CNPJ do remetente ou pagador com 14 dígitos.');
-      }
-
-      if (!form.notaFiscal && !form.pedido) {
-        return alert('Para a Camilo, informe a Nota Fiscal ou o número do Pedido.');
       }
     } else if (!form.notaFiscal && !form.pedido && !form.conhecimento) {
       return alert('Informe pelo menos Nota Fiscal, Pedido ou Conhecimento/CT-e.');
@@ -2733,17 +2705,6 @@ function TrackingPage({ user }) {
     return 'badge-alert';
   }
 
-  const selectedTrackingCarrier = carriers.find(
-    (carrier) => String(carrier.id) === String(form.carrierId)
-  );
-  const selectedTrackingCarrierName = String(selectedTrackingCarrier?.nome || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-  const trackingDocumentLabel = selectedTrackingCarrierName.includes('camilo')
-    ? 'CNPJ do remetente ou pagador'
-    : 'CNPJ do tomador';
-
   return (
     <>
       <div className="pageHeader">
@@ -2777,9 +2738,6 @@ function TrackingPage({ user }) {
               <span className={`badge ${adminConfig?.braspressTrackingConfigured ? 'badge-success' : 'badge-error'}`}>
                 Braspress {adminConfig?.braspressTrackingConfigured ? 'configurada' : 'não configurada'}
               </span>
-              <span className={`badge ${adminConfig?.camiloTrackingConfigured ? 'badge-success' : 'badge-error'}`}>
-                Camilo {adminConfig?.camiloTrackingConfigured ? 'configurada' : 'não configurada'}
-              </span>
               <span className={`badge ${adminConfig?.emailProvider !== 'não configurado' ? 'badge-success' : 'badge-alert'}`}>
                 E-mail: {adminConfig?.emailProvider || 'não configurado'}
               </span>
@@ -2808,19 +2766,6 @@ function TrackingPage({ user }) {
             <small>
               Produção: https://api.braspress.com. O sistema usa automaticamente a API v3 e acrescenta
               /byNf/CNPJ/NF/json ou /byNumPedido/CNPJ/PEDIDO/json.
-            </small>
-          </label>
-
-          <label className="fieldLabel fieldSpan">
-            URL de tracking da Camilo / SSW
-            <input
-              type="url"
-              placeholder="https://ssw.inf.br/2/ssw_resultSSW"
-              value={configForm.camiloTrackingUrl}
-              onChange={(event) => setConfigForm({ ...configForm, camiloTrackingUrl: event.target.value })}
-            />
-            <small>
-              O sistema consulta o portal SSW por CNPJ e Nota Fiscal/Pedido e usa a senha do pagador cadastrada em Credenciais.
             </small>
           </label>
 
@@ -2940,7 +2885,7 @@ function TrackingPage({ user }) {
           <input value="A cada 1 hora" readOnly />
         </label>
 
-        <label className="fieldLabel">{trackingDocumentLabel}<input value={form.documento} onChange={(event) => setForm({ ...form, documento: event.target.value })} /></label>
+        <label className="fieldLabel">CNPJ do tomador<input value={form.documento} onChange={(event) => setForm({ ...form, documento: event.target.value })} /></label>
         <label className="fieldLabel">Nota Fiscal<input value={form.notaFiscal} onChange={(event) => setForm({ ...form, notaFiscal: event.target.value })} /></label>
         <label className="fieldLabel">Pedido<input value={form.pedido} onChange={(event) => setForm({ ...form, pedido: event.target.value })} /></label>
         <label className="fieldLabel">Conhecimento / CT-e<input value={form.conhecimento} onChange={(event) => setForm({ ...form, conhecimento: event.target.value })} /></label>
