@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum IntegrationType {
+  API
+  PORTAL
+  MANUAL
+}
+
+enum Environment {
+  HOMOLOGACAO
+  PRODUCAO
+}
+
+enum FreightType {
+  CIF
+  FOB
+  TERCEIROS
+}
+
+enum QuoteStatus {
+  DRAFT
+  COMPLETED
+  ERROR
+  INACTIVE
+}
+
+enum ResultStatus {
+  success
+  error
+}
+
+model User {
+  id                 Int      @id @default(autoincrement())
+  email              String   @unique
+  passwordHash       String
+  name               String
+  role               Role     @default(USER)
+  companyId          Int?
+  active             Boolean  @default(true)
+  mustChangePassword Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id])
+  quotes    Quote[]
+  trackings ShipmentTracking[]
+
+  @@index([companyId])
+}
+
+model Company {
+  id                Int      @id @default(autoincrement())
+  razaoSocial       String
+  nomeFantasia      String?
+  cnpj              String   @unique
+  inscricaoEstadual String?
+  cep               String
+  endereco          String
+  numero            String?
+  complemento       String?
+  bairro            String?
+  cidade            String
+  uf                String
+  telefone          String?
+  email             String?
+  ativo             Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  credentials CarrierCredential[]
+  quotes      Quote[]
+  users       User[]
+  trackings   ShipmentTracking[]
+}
+
+model Product {
+  id           Int      @id @default(autoincrement())
+  description  String   @unique
+  lengthMeters Decimal  @db.Decimal(10, 3)
+  widthMeters  Decimal  @db.Decimal(10, 3)
+  heightMeters Decimal  @db.Decimal(10, 3)
+  weightKg     Decimal  @db.Decimal(10, 3)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  quoteItems QuoteItem[]
+
+  @@index([description])
+}
+
+model Carrier {
+  id             Int             @id @default(autoincrement())
+  nome           String          @unique
+  logoUrl        String?
+  tipoIntegracao IntegrationType @default(API)
+  ambientePadrao Environment     @default(HOMOLOGACAO)
+  apiUrl         String?
+  portalUrl      String?
+  observacoes    String?
+  ativo          Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  credentials CarrierCredential[]
+  results     QuoteResult[]
+  trackings   ShipmentTracking[]
+}
+
+model CarrierCredential {
+  id                 Int         @id @default(autoincrement())
+  companyId          Int
+  carrierId          Int
+  usuario            String?
+  senhaCriptografada String?
+  tokenCriptografado String?
+  codigoCliente      String?
+  contrato           String?
+  cnpjVinculado      String?
+  ambiente           Environment @default(HOMOLOGACAO)
+  ativo              Boolean     @default(true)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  carrier Carrier @relation(fields: [carrierId], references: [id])
+
+  @@unique([companyId, carrierId, ambiente])
+}
+
+model Quote {
+  id                      Int         @id @default(autoincrement())
+  draftId                 String?     @unique
+  companyId               Int
+  userId                  Int?
+  cnpjDestinatario        String
+  razaoSocialDestinatario String?
+  cepDestino              String
+  enderecoDestino         String?
+  cidadeDestino           String?
+  ufDestino               String?
+  cnpjTerceiro            String?
+  razaoSocialTerceiro     String?
+  valorMercadoria         Decimal     @db.Decimal(12, 2)
+  pesoTotal               Decimal     @db.Decimal(12, 3)
+  quantidadeVolumes       Int
+  tipoFrete               FreightType
+  modal                   String
+  status                  QuoteStatus @default(COMPLETED)
+  createdAt               DateTime    @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User?   @relation(fields: [userId], references: [id])
+
+  items   QuoteItem[]
+  results   QuoteResult[]
+  trackings ShipmentTracking[]
+}
+
+model QuoteItem {
+  id          Int     @id @default(autoincrement())
+  quoteId     Int
+  productId   Int?
+  sku         String?
+  descricao   String?
+  comprimento Decimal @db.Decimal(10, 3)
+  largura     Decimal @db.Decimal(10, 3)
+  altura      Decimal @db.Decimal(10, 3)
+  peso        Decimal @db.Decimal(10, 3)
+  quantidade  Int
+  cubagem     Decimal @db.Decimal(10, 4)
+
+  quote   Quote    @relation(fields: [quoteId], references: [id])
+  product Product? @relation(fields: [productId], references: [id])
+
+  @@index([productId])
+}
+
+model QuoteResult {
+  id          Int          @id @default(autoincrement())
+  quoteId     Int
+  carrierId   Int
+  status      ResultStatus
+  valorFrete  Decimal?     @db.Decimal(12, 2)
+  prazo       String?
+  modalidade  String?
+  mensagem    String?
+  rawResponse Json?
+  createdAt   DateTime     @default(now())
+
+  quote   Quote   @relation(fields: [quoteId], references: [id])
+  carrier Carrier @relation(fields: [carrierId], references: [id])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String
+  entityId  String?
+  payload   Json?
+  createdAt DateTime @default(now())
+}
+
+model ShipmentTracking {
+  id              Int       @id @default(autoincrement())
+  quoteId         Int?
+  carrierId       Int?
+  companyId       Int?
+  userId          Int?
+
+  numeroNota      String?
+  numeroPedido    String?
+  conhecimento    String?
+  documento       String?
+
+  status          String?
+  previsaoEntrega DateTime?
+  dataEntrega     DateTime?
+  cidadeDestino   String?
+  ufDestino       String?
+
+  monitoringActive     Boolean  @default(true)
+  checkIntervalMinutes Int      @default(30)
+  lastCheckedAt        DateTime?
+  nextCheckAt          DateTime @default(now())
+  lastCheckError       String?
+  consecutiveErrors    Int      @default(0)
+  notificationSentAt          DateTime?
+  emailNotificationSentAt     DateTime?
+  emailNotificationError      String?
+  emailNotificationAttempts   Int       @default(0)
+  emailNotificationNextAttemptAt DateTime?
+
+  rawResponse Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  quote   Quote?   @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  carrier Carrier? @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+  company Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  user    User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  events  ShipmentEvent[]
+
+  @@index([monitoringActive, nextCheckAt])
+  @@index([companyId, carrierId])
+  @@index([status])
+  @@index([emailNotificationSentAt, emailNotificationNextAttemptAt])
+}
+
+model ShipmentEvent {
+  id          Int       @id @default(autoincrement())
+  trackingId  Int
+  descricao   String
+  dataEvento  DateTime?
+  cidade      String?
+  uf          String?
+  tipo        String?
+  rawResponse Json?
+  createdAt   DateTime  @default(now())
+
+  tracking ShipmentTracking @relation(fields: [trackingId], references: [id])
+}
+
+
+model SystemSetting {
+  key         String   @id
+  value       String?
+  encrypted   Boolean  @default(false)
+  updatedById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
