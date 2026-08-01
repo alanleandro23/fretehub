@@ -1,7 +1,9 @@
 const {
-  processDueTrackings,
-  processPendingDeliveryEmails
+  processDueTrackings
 } = require('./tracking.service');
+const {
+  processPendingNotificationEmails
+} = require('./notification.service');
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 let timer = null;
@@ -20,8 +22,8 @@ async function runCycle() {
       console.warn(`Tracking automático: ${failedTrackings.length} consulta(s) com erro no ciclo.`);
     }
 
-    const emailResults = await processPendingDeliveryEmails(
-      Number(process.env.EMAIL_NOTIFICATION_BATCH_SIZE || batchSize)
+    const emailResults = await processPendingNotificationEmails(
+      Number(process.env.EMAIL_NOTIFICATION_BATCH_SIZE || Math.max(batchSize * 2, 40))
     );
     const failedEmails = emailResults.filter((item) => !item.success);
 

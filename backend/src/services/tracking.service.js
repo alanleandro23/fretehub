@@ -4,6 +4,13 @@ const { decrypt } = require('../utils/crypto');
 const { getDefinition, evaluateTrackingCarrier } = require('./integration-registry');
 const { sendDeliveryEmail } = require('./email.service');
 const { TRACKING_INTERVAL_MINUTES } = require('./config.service');
+const { syncProviderDeliveryProofs, normalizeProof, deleteDeliveryProofFilesForTracking } = require('./delivery-proof.service');
+const {
+  notifyDelivery,
+  notifyDelay,
+  notifyDivergence,
+  notifyTrackingFailure
+} = require('./notification.service');
 
 const activeChecks = new Set();
 
@@ -99,6 +106,46 @@ function toJsonSafe(value, seen = new WeakSet()) {
   }
 
   return String(value);
+}
+
+function collectNestedObjects(value, output = [], seen = new WeakSet()) {
+  if (!value || typeof value !== 'object') return output;
+  if (seen.has(value)) return output;
+  seen.add(value);
+  output.push(value);
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectNestedObjects(item, output, seen));
+  } else {
+    Object.values(value).forEach((item) => collectNestedObjects(item, output, seen));
+  }
+  return output;
+}
+
+function extractRecipientName(realTracking = {}) {
+  const direct = [
+    realTracking.destinatarioNome,
+    realTracking.nomeDestinatario,
+    realTracking.destinatario
+  ].map(scalarText).find(Boolean);
+  if (direct) return direct;
+
+  const keys = [
+    'destinatarioNome', 'nomeDestinatario', 'razaoSocialDestinatario',
+    'nomeRecebedor', 'destinatario', 'consignatario'
+  ];
+  const objects = collectNestedObjects(realTracking.rawResponse || realTracking);
+  for (const object of objects) {
+    for (const key of keys) {
+      const value = object?.[key];
+      if (typeof value === 'object' && value) {
+        const nested = scalarText(value.nome) || scalarText(value.razaoSocial);
+        if (nested) return nested;
+      }
+      const text = scalarText(value);
+      if (text) return text;
+    }
+  }
+  return null;
 }
 
 function isDeliveredStatus(value) {
@@ -220,14 +267,46 @@ const trackingInclude = {
   carrier: { select: { id: true, nome: true, ambientePadrao: true, ativo: true } },
   company: { select: { id: true, razaoSocial: true, nomeFantasia: true, email: true } },
   user: { select: { id: true, name: true } },
-  events: { orderBy: [{ dataEvento: 'asc' }, { createdAt: 'asc' }] }
+  events: { orderBy: [{ dataEvento: 'asc' }, { createdAt: 'asc' }] },
+  deliveryProofs: {
+    orderBy: { createdAt: 'desc' },
+    include: { uploadedBy: { select: { id: true, name: true } } }
+  }
 };
+
+function queryBoolean(value) {
+  return ['true', '1', 'sim', 'yes'].includes(String(value || '').toLowerCase());
+}
+
+function startOfDay(value) {
+  const parsed = parseDate(value);
+  if (!parsed) return null;
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+}
+
+function endOfDay(value) {
+  const parsed = parseDate(value);
+  if (!parsed) return null;
+  parsed.setHours(23, 59, 59, 999);
+  return parsed;
+}
+
+function rangeFilter(from, to) {
+  const filter = {};
+  const fromDate = startOfDay(from);
+  const toDate = endOfDay(to);
+  if (fromDate) filter.gte = fromDate;
+  if (toDate) filter.lte = toDate;
+  return Object.keys(filter).length ? filter : null;
+}
 
 async function listTrackings(query = {}, user = null) {
   const where = { ...accessWhere(user) };
 
-  if (query.companyId && user?.role === 'ADMIN') where.companyId = Number(query.companyId);
+  if (query.companyId) where.companyId = Number(query.companyId);
   if (query.carrierId) where.carrierId = Number(query.carrierId);
+  if (query.userId) where.userId = Number(query.userId);
   if (query.notaFiscal) {
     where.numeroNota = { contains: String(query.notaFiscal), mode: 'insensitive' };
   }
@@ -240,18 +319,111 @@ async function listTrackings(query = {}, user = null) {
   if (query.documento) {
     where.documento = { contains: onlyNumbers(query.documento), mode: 'insensitive' };
   }
+  if (query.destinatario) {
+    where.destinatarioNome = { contains: String(query.destinatario), mode: 'insensitive' };
+  }
   if (query.status) {
     where.status = { contains: String(query.status), mode: 'insensitive' };
   }
 
+  const createdRange = rangeFilter(query.createdFrom || query.periodFrom, query.createdTo || query.periodTo);
+  if (createdRange) where.createdAt = createdRange;
+  const predictionRange = rangeFilter(query.predictionFrom, query.predictionTo);
+  if (predictionRange) where.previsaoEntrega = predictionRange;
+  const deliveryRange = rangeFilter(query.deliveryFrom, query.deliveryTo);
+  if (deliveryRange) where.dataEntrega = deliveryRange;
+
+  if (queryBoolean(query.delayed)) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    where.dataEntrega = null;
+    where.previsaoEntrega = { lt: today };
+  }
+  if (queryBoolean(query.divergence)) where.hasDivergence = true;
+  if (queryBoolean(query.hasError)) where.lastCheckError = { not: null };
+  if (String(query.proof || '').toLowerCase() === 'with') {
+    where.deliveryProofs = { some: {} };
+  } else if (String(query.proof || '').toLowerCase() === 'without') {
+    where.deliveryProofs = { none: {} };
+  }
+
+  const sortMap = {
+    updatedAt: 'updatedAt',
+    createdAt: 'createdAt',
+    previsaoEntrega: 'previsaoEntrega',
+    dataEntrega: 'dataEntrega',
+    status: 'status'
+  };
+  const sortBy = sortMap[query.sortBy] || 'updatedAt';
+  const sortDir = String(query.sortDir || '').toLowerCase() === 'asc' ? 'asc' : 'desc';
+  const paged = queryBoolean(query.paged);
+  const pageSize = Math.min(Math.max(Number(query.pageSize) || 25, 5), 100);
+  const page = Math.max(Number(query.page) || 1, 1);
+
+  if (paged) {
+    const [total, rows] = await prisma.$transaction([
+      prisma.shipmentTracking.count({ where }),
+      prisma.shipmentTracking.findMany({
+        where,
+        orderBy: { [sortBy]: sortDir },
+        include: trackingInclude,
+        skip: (page - 1) * pageSize,
+        take: pageSize
+      })
+    ]);
+
+    return {
+      items: rows.map(normalizeTracking),
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(Math.ceil(total / pageSize), 1)
+      }
+    };
+  }
+
   const rows = await prisma.shipmentTracking.findMany({
     where,
-    orderBy: { updatedAt: 'desc' },
+    orderBy: { [sortBy]: sortDir },
     include: trackingInclude,
     take: Math.min(Number(query.limit) || 300, 1000)
   });
 
   return rows.map(normalizeTracking);
+}
+
+async function getTrackingFilterOptions() {
+  const [companies, carriers, users, statusRows] = await Promise.all([
+    prisma.company.findMany({
+      where: { trackings: { some: {} } },
+      orderBy: [{ nomeFantasia: 'asc' }, { razaoSocial: 'asc' }],
+      select: { id: true, razaoSocial: true, nomeFantasia: true }
+    }),
+    prisma.carrier.findMany({
+      where: { trackings: { some: {} } },
+      orderBy: { nome: 'asc' },
+      select: { id: true, nome: true }
+    }),
+    prisma.user.findMany({
+      where: { trackings: { some: {} }, active: true },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true }
+    }),
+    prisma.shipmentTracking.findMany({
+      where: { status: { not: null } },
+      distinct: ['status'],
+      orderBy: { status: 'asc' },
+      select: { status: true }
+    })
+  ]);
+
+  return {
+    companies,
+    carriers,
+    users,
+    statuses: statusRows.map((row) => row.status).filter(Boolean)
+  };
 }
 
 async function findCarrier(data, companyId) {
@@ -354,6 +526,7 @@ async function createTracking(data, user) {
       numeroPedido: String(data.numeroPedido || data.pedido || '').trim() || null,
       conhecimento: String(data.conhecimento || '').trim() || null,
       documento: onlyNumbers(data.documento) || null,
+      destinatarioNome: String(data.destinatarioNome || data.destinatario || '').trim() || null,
       status: 'Criado',
       monitoringActive: true,
       checkIntervalMinutes,
@@ -399,6 +572,7 @@ async function addTrackingEvent(trackingId, data, user) {
     where: { id: tracking.id },
     data: {
       status: lastStatus,
+      hasDivergence: isExceptionalTrackingText(`${lastStatus} ${data.descricao || ''}`) ? true : undefined,
       dataEntrega: delivered ? eventDate : undefined,
       monitoringActive: delivered ? false : undefined,
       notificationSentAt: delivered ? null : undefined,
@@ -465,7 +639,13 @@ async function updateTracking(id, data, user) {
     documento: data.documento !== undefined
       ? onlyNumbers(data.documento) || null
       : undefined,
+    destinatarioNome: data.destinatarioNome !== undefined || data.destinatario !== undefined
+      ? String(data.destinatarioNome || data.destinatario || '').trim() || null
+      : undefined,
     status: data.status !== undefined ? requestedStatus : undefined,
+    hasDivergence: data.hasDivergence !== undefined
+      ? Boolean(data.hasDivergence)
+      : isExceptionalTrackingText(requestedStatus) ? true : undefined,
     previsaoEntrega: data.previsaoEntrega !== undefined
       ? parseDate(data.previsaoEntrega)
       : undefined,
@@ -525,6 +705,8 @@ async function deleteTracking(id) {
     select: { id: true }
   });
   if (!current) throw new Error('Tracking não encontrado.');
+
+  await deleteDeliveryProofFilesForTracking(trackingId);
 
   await prisma.$transaction([
     prisma.shipmentEvent.deleteMany({ where: { trackingId } }),
@@ -844,13 +1026,14 @@ async function upsertCarrierOccurrence(trackingId, externalEvent, now) {
     })
   };
 
+  let savedEvent;
   if (existing) {
-    await prisma.shipmentEvent.update({
+    savedEvent = await prisma.shipmentEvent.update({
       where: { id: existing.id },
       data: eventData
     });
   } else {
-    await prisma.shipmentEvent.create({
+    savedEvent = await prisma.shipmentEvent.create({
       data: {
         trackingId,
         ...eventData
@@ -858,7 +1041,14 @@ async function upsertCarrierOccurrence(trackingId, externalEvent, now) {
     });
   }
 
-  return stage;
+  return {
+    stage,
+    key,
+    created: !existing,
+    title: occurrenceTitle,
+    eventDate: sourceDate,
+    eventId: savedEvent.id
+  };
 }
 
 async function saveExternalEvents(tracking, realTracking, now) {
@@ -898,13 +1088,16 @@ async function saveExternalEvents(tracking, realTracking, now) {
   });
 
   let latestStage = null;
+  const changes = [];
 
   for (const externalEvent of orderedEvents) {
-    latestStage = await upsertCarrierOccurrence(
+    const result = await upsertCarrierOccurrence(
       tracking.id,
       externalEvent,
       now
     );
+    latestStage = result.stage;
+    changes.push(result);
   }
 
   if (!latestStage && (realTracking.status || realTracking.ultimaOcorrencia)) {
@@ -915,7 +1108,7 @@ async function saveExternalEvents(tracking, realTracking, now) {
     });
   }
 
-  return latestStage;
+  return { latestStage, changes };
 }
 
 async function checkTrackingNow(id, user = null) {
@@ -956,7 +1149,8 @@ async function checkTrackingNow(id, user = null) {
     });
 
     const now = new Date();
-    const latestStage = await saveExternalEvents(tracking, realTracking, now);
+    const eventSync = await saveExternalEvents(tracking, realTracking, now);
+    const latestStage = eventSync.latestStage;
 
     const status =
       latestStage?.status ||
@@ -971,6 +1165,10 @@ async function checkTrackingNow(id, user = null) {
       isDeliveredStatus(realTracking.ultimaOcorrencia) ||
       Boolean(providerDeliveryDate);
     const deliveryDate = providerDeliveryDate || (delivered ? now : tracking.dataEntrega);
+    const divergenceDetected = (eventSync.changes || []).some((change) =>
+      String(change.stage?.key || '').startsWith('DIVERGENCIA')
+    );
+    const destinatarioNome = extractRecipientName(realTracking) || tracking.destinatarioNome;
 
     await prisma.shipmentTracking.update({
       where: { id: tracking.id },
@@ -983,12 +1181,14 @@ async function checkTrackingNow(id, user = null) {
         dataEntrega: deliveryDate,
         cidadeDestino: scalarText(realTracking.cidade) || tracking.cidadeDestino,
         ufDestino: scalarText(realTracking.uf) || tracking.ufDestino,
+        destinatarioNome,
+        hasDivergence: Boolean(tracking.hasDivergence || divergenceDetected),
         monitoringActive: !delivered,
         lastCheckedAt: now,
         nextCheckAt: delivered ? addMinutes(now, tracking.checkIntervalMinutes) : nextAttemptDate(tracking),
         lastCheckError: null,
         consecutiveErrors: 0,
-        notificationSentAt: delivered && !tracking.dataEntrega ? null : tracking.notificationSentAt,
+        notificationSentAt: delivered && !tracking.dataEntrega ? now : tracking.notificationSentAt,
         emailNotificationNextAttemptAt:
           delivered && !tracking.dataEntrega && !tracking.emailNotificationSentAt
             ? now
@@ -1001,6 +1201,45 @@ async function checkTrackingNow(id, user = null) {
         })
       }
     });
+
+    const updatedTracking = await prisma.shipmentTracking.findUnique({
+      where: { id: tracking.id },
+      include: trackingInclude
+    });
+
+    await syncProviderDeliveryProofs(updatedTracking, realTracking).catch((proofError) => {
+      console.warn(`Comprovante do tracking #${tracking.id}: ${proofError.message}`);
+    });
+
+    const notificationTasks = [];
+    if (delivered) {
+      notificationTasks.push(notifyDelivery(updatedTracking));
+    }
+
+    for (const change of eventSync.changes || []) {
+      if (String(change.stage?.key || '').startsWith('DIVERGENCIA')) {
+        notificationTasks.push(notifyDivergence(updatedTracking, {
+          key: change.key,
+          description: change.title,
+          eventDate: change.eventDate
+        }));
+      }
+    }
+
+    const effectivePrediction = parseDate(realTracking.previsaoEntrega) || updatedTracking?.previsaoEntrega;
+    if (!delivered && effectivePrediction) {
+      const deadline = new Date(effectivePrediction);
+      deadline.setHours(23, 59, 59, 999);
+      if (now > deadline) notificationTasks.push(notifyDelay(updatedTracking, effectivePrediction));
+    }
+
+    if (notificationTasks.length) {
+      const notificationResults = await Promise.allSettled(notificationTasks);
+      const notificationFailures = notificationResults.filter((result) => result.status === 'rejected');
+      if (notificationFailures.length) {
+        console.warn(`Notificações do tracking #${tracking.id}: ${notificationFailures.length} falha(s) ao registrar.`);
+      }
+    }
 
     console.log('Tracking aplicado ao FreteHub:', {
       trackingId: tracking.id,
@@ -1026,6 +1265,26 @@ async function checkTrackingNow(id, user = null) {
           consecutiveErrors: { increment: 1 }
         }
       });
+
+      const failedTracking = await prisma.shipmentTracking.findUnique({
+        where: { id: tracking.id },
+        include: trackingInclude
+      });
+      await notifyTrackingFailure(
+        failedTracking,
+        error,
+        Number(tracking.consecutiveErrors || 0) + 1
+      ).catch((notificationError) => {
+        console.warn(`Falha ao registrar notificação do tracking #${tracking.id}: ${notificationError.message}`);
+      });
+
+      if (!tracking.dataEntrega && tracking.previsaoEntrega) {
+        const deadline = new Date(tracking.previsaoEntrega);
+        deadline.setHours(23, 59, 59, 999);
+        if (now > deadline) {
+          await notifyDelay(failedTracking, tracking.previsaoEntrega).catch(() => {});
+        }
+      }
     }
     throw error;
   } finally {
@@ -1280,6 +1539,8 @@ function normalizeTracking(tracking) {
       tracking.rawResponse?.transportadora ||
       '-',
     documento: tracking.documento,
+    destinatarioNome: tracking.destinatarioNome || null,
+    hasDivergence: Boolean(tracking.hasDivergence),
     notaFiscal: tracking.numeroNota,
     pedido: tracking.numeroPedido,
     conhecimento: tracking.conhecimento,
@@ -1300,13 +1561,16 @@ function normalizeTracking(tracking) {
       lastCarrierEvent?.descricao ||
       lastCarrierEvent?.tipo ||
       '-',
-    eventos: logisticsEvents
+    eventos: logisticsEvents,
+    comprovantes: (tracking.deliveryProofs || []).map(normalizeProof),
+    comprovantesTotal: (tracking.deliveryProofs || []).length
   };
 }
 
 module.exports = {
   listTrackings,
   listAvailableCarriers,
+  getTrackingFilterOptions,
   createTracking,
   updateTracking,
   deleteTracking,

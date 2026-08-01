@@ -16,7 +16,25 @@ import {
   RefreshCw,
   Pencil,
   Trash2,
-  Settings
+  Settings,
+  Bell,
+  CheckCheck,
+  X,
+  AlertTriangle,
+  CircleCheck,
+  Clock3,
+  Mail,
+  Paperclip,
+  Upload,
+  ExternalLink,
+  Download,
+  FileText,
+  ChevronLeft,
+  ChevronRight,
+  Filter,
+  ChevronDown,
+  ChevronUp,
+  MoreVertical
 } from 'lucide-react';
 import './style.css';
 import {
@@ -38,6 +56,70 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:3001'
 });
 
+function assetUrl(value) {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  if (/^(https?:|data:|blob:)/i.test(source)) return source;
+  return `${String(api.defaults.baseURL || '').replace(/\/$/, '')}/${source.replace(/^\//, '')}`;
+}
+
+function fileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo selecionado.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const ROLE_LABELS = Object.freeze({
+  ADMIN: 'Administrador',
+  OPERATOR: 'Operador',
+  VIEWER: 'Consulta',
+  USER: 'Operador'
+});
+
+const FALLBACK_ROLE_PERMISSIONS = Object.freeze({
+  ADMIN: [
+    'QUOTE_VIEW', 'QUOTE_CREATE', 'QUOTE_SAVE', 'QUOTE_EXPORT', 'QUOTE_SEND', 'QUOTE_DELETE',
+    'TRACKING_VIEW', 'TRACKING_CREATE', 'TRACKING_CHECK', 'TRACKING_EDIT',
+    'TRACKING_DELETE', 'TRACKING_EVENT_CREATE', 'TRACKING_PROOF_CREATE',
+    'TRACKING_PROOF_DELETE', 'TRACKING_CONFIG_MANAGE',
+    'USER_MANAGE', 'COMPANY_MANAGE', 'CARRIER_MANAGE',
+    'CREDENTIAL_MANAGE', 'PRODUCT_MANAGE'
+  ],
+  OPERATOR: [
+    'QUOTE_VIEW', 'QUOTE_CREATE', 'QUOTE_SAVE', 'QUOTE_EXPORT', 'QUOTE_SEND',
+    'TRACKING_VIEW', 'TRACKING_CREATE', 'TRACKING_CHECK', 'TRACKING_PROOF_CREATE'
+  ],
+  VIEWER: ['QUOTE_VIEW', 'QUOTE_EXPORT', 'TRACKING_VIEW'],
+  USER: [
+    'QUOTE_VIEW', 'QUOTE_CREATE', 'QUOTE_SAVE', 'QUOTE_EXPORT', 'QUOTE_SEND',
+    'TRACKING_VIEW', 'TRACKING_CREATE', 'TRACKING_CHECK', 'TRACKING_PROOF_CREATE'
+  ]
+});
+
+function roleLabel(role) {
+  return ROLE_LABELS[role] || 'Consulta';
+}
+
+function userPermissions(user) {
+  if (Array.isArray(user?.permissions)) return user.permissions;
+  return FALLBACK_ROLE_PERMISSIONS[user?.role] || [];
+}
+
+function can(user, permission) {
+  return userPermissions(user).includes(permission);
+}
+
+function defaultPageForUser(user) {
+  if (user?.mustChangePassword) return 'password';
+  if (can(user, 'QUOTE_CREATE')) return 'quotes';
+  if (can(user, 'QUOTE_VIEW')) return 'history';
+  if (can(user, 'TRACKING_VIEW')) return 'tracking';
+  return 'password';
+}
+
 api.interceptors.request.use((c) => {
   const t = localStorage.getItem('token');
   if (t) c.headers.Authorization = `Bearer ${t}`;
@@ -48,6 +130,24 @@ function money(v) {
   return v
     ? Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
     : '-';
+}
+
+async function downloadQuoteDocument(quote, format) {
+  const extension = format === 'pdf' ? 'pdf' : 'xlsx';
+  const response = await api.get(`/quotes/${quote.id}/export-${format}`, { responseType: 'blob' });
+  const blob = new Blob([response.data], {
+    type: format === 'pdf'
+      ? 'application/pdf'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `cotacao-${quote.id}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function Login({ onLogin }) {
@@ -114,100 +214,188 @@ function Login({ onLogin }) {
   );
 }
 
-function DeliveryNotifications() {
-  const [notifications, setNotifications] = useState([]);
+function NotificationCenter({ setPage }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const panelRef = useRef(null);
   const browserNotifiedRef = useRef(new Set());
 
-  useEffect(() => {
-    let active = true;
+  async function loadNotifications(silent = false) {
+    if (!silent) setLoading(true);
+    try {
+      const [listResponse, countResponse] = await Promise.all([
+        api.get('/notifications', { params: { limit: 40 } }),
+        api.get('/notifications/unread-count')
+      ]);
+      const rows = listResponse.data || [];
+      setItems(rows);
+      setUnreadCount(Number(countResponse.data?.count || 0));
 
-    async function poll() {
-      try {
-        const response = await api.get('/tracking/notifications/pending');
-        const pending = response.data || [];
-        if (!active || !pending.length) return;
-
-        setNotifications((current) => {
-          const known = new Set(current.map((item) => item.id));
-          return [...current, ...pending.filter((item) => !known.has(item.id))];
-        });
-
-        for (const item of pending) {
-          if (
-            !browserNotifiedRef.current.has(item.id) &&
-            'Notification' in window &&
-            Notification.permission === 'granted'
-          ) {
-            new Notification('Carga entregue', {
-              body: `${item.transportadora} · NF ${item.notaFiscal || '-'} · ${item.cidade || '-'}/${item.uf || '-'}`
-            });
-            browserNotifiedRef.current.add(item.id);
-          }
+      for (const item of rows.filter((row) => !row.readAt)) {
+        if (
+          !browserNotifiedRef.current.has(item.id) &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          new Notification(item.title, { body: item.message });
+          browserNotifiedRef.current.add(item.id);
         }
-      } catch (error) {
-        console.error('Erro ao consultar notificações de entrega:', error);
       }
+    } catch (error) {
+      console.error('Erro ao carregar central de notificações:', error);
+    } finally {
+      if (!silent) setLoading(false);
     }
-
-    poll();
-    const timer = setInterval(poll, 30000);
-
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, []);
-
-  async function closeNotification(item) {
-    await api.post(`/tracking/${item.id}/notifications/ack`).catch(() => {});
-    setNotifications((current) => current.filter((row) => row.id !== item.id));
   }
 
-  if (!notifications.length) return null;
+  useEffect(() => {
+    loadNotifications(true);
+    const timer = setInterval(() => loadNotifications(true), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    function closeOnOutsideClick(event) {
+      if (panelRef.current && !panelRef.current.contains(event.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, []);
+
+  async function markRead(item) {
+    if (!item.readAt) {
+      await api.post(`/notifications/${item.id}/read`).catch(() => {});
+      setItems((current) => current.map((row) => (
+        row.id === item.id ? { ...row, readAt: new Date().toISOString() } : row
+      )));
+      setUnreadCount((current) => Math.max(0, current - 1));
+    }
+  }
+
+  async function openNotification(item) {
+    await markRead(item);
+    if (item.trackingId) {
+      sessionStorage.setItem('fretehubTrackingFocusId', String(item.trackingId));
+      window.dispatchEvent(new CustomEvent('fretehub:open-tracking', {
+        detail: { trackingId: Number(item.trackingId) }
+      }));
+      setPage('tracking');
+    }
+    setOpen(false);
+  }
+
+  async function markAllRead() {
+    await api.post('/notifications/read-all');
+    const now = new Date().toISOString();
+    setItems((current) => current.map((row) => ({ ...row, readAt: row.readAt || now })));
+    setUnreadCount(0);
+  }
+
+  async function archive(item, event) {
+    event.stopPropagation();
+    await api.delete(`/notifications/${item.id}`);
+    setItems((current) => current.filter((row) => row.id !== item.id));
+    if (!item.readAt) setUnreadCount((current) => Math.max(0, current - 1));
+  }
+
+  function notificationIcon(item) {
+    if (item.type === 'DELIVERY') return <CircleCheck size={18} />;
+    if (item.type === 'DELAY') return <Clock3 size={18} />;
+    if (item.type === 'DELIVERY_PROOF') return <Paperclip size={18} />;
+    return <AlertTriangle size={18} />;
+  }
 
   return (
-    <div className="notificationStack" aria-live="polite">
-      {notifications.map((item) => (
-        <div className="deliveryNotification" key={item.id}>
-          <div>
-            <strong>Carga entregue</strong>
-            <p>
-              {item.transportadora} · NF {item.notaFiscal || '-'}<br />
-              {item.cidade || '-'} / {item.uf || '-'} · {item.dataEntrega || 'entregue'}
-            </p>
+    <div className="notificationCenter" ref={panelRef}>
+      <button
+        type="button"
+        className="notificationBell"
+        onClick={() => {
+          setOpen((current) => !current);
+          if (!open) loadNotifications();
+        }}
+        aria-label={`Notificações${unreadCount ? `, ${unreadCount} não lidas` : ''}`}
+      >
+        <Bell size={20} />
+        {unreadCount > 0 && <span className="notificationCount">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+      </button>
+
+      {open && (
+        <div className="notificationPanel">
+          <div className="notificationPanelHeader">
+            <div>
+              <strong>Notificações</strong>
+              <small>{unreadCount} não lida{unreadCount === 1 ? '' : 's'}</small>
+            </div>
+            <button
+              type="button"
+              className="notificationTextButton"
+              onClick={markAllRead}
+              disabled={!unreadCount}
+            >
+              <CheckCheck size={16} /> Marcar todas
+            </button>
           </div>
-          <button
-            type="button"
-            className="btn-secondary notificationClose"
-            onClick={() => closeNotification(item)}
-            aria-label="Fechar notificação"
-          >
-            ×
-          </button>
+
+          <div className="notificationList" aria-live="polite">
+            {loading && <div className="notificationEmpty">Carregando...</div>}
+            {!loading && !items.length && (
+              <div className="notificationEmpty">Nenhuma notificação.</div>
+            )}
+            {!loading && items.map((item) => (
+              <div
+                key={item.id}
+                className={`notificationItem ${item.readAt ? '' : 'unread'} severity-${item.severity || 'info'}`}
+              >
+                <button
+                  type="button"
+                  className="notificationItemMain"
+                  onClick={() => openNotification(item)}
+                >
+                  <span className="notificationItemIcon">{notificationIcon(item)}</span>
+                  <span className="notificationItemContent">
+                    <strong>{item.title}</strong>
+                    <span>{item.message}</span>
+                    <small>{new Date(item.createdAt).toLocaleString('pt-BR')}</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="notificationArchive"
+                  aria-label="Arquivar notificação"
+                  onClick={(event) => archive(item, event)}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
 function Layout({ children, setPage, page, user }) {
   const operationItems = [
-    ['quotes', 'Cotação de frete', Truck],
-    ['history', 'Histórico de cotações', History],
-    ['tracking', 'Tracking de cargas', Truck]
-  ];
+    can(user, 'QUOTE_CREATE') && ['quotes', 'Cotação de frete', Truck],
+    can(user, 'QUOTE_VIEW') && ['history', 'Histórico de cotações', History],
+    can(user, 'TRACKING_VIEW') && ['tracking', 'Tracking de cargas', Truck]
+  ].filter(Boolean);
 
   const adminItems = [
-    ['users', 'Usuários', Users],
-    ['products', 'Produtos', Package],
-    ['companies', 'Empresas', Building2],
-    ['carriers', 'Transportadoras', Truck],
-    ['credentials', 'Credenciais', KeyRound]
-  ];
+    can(user, 'USER_MANAGE') && ['users', 'Usuários', Users],
+    can(user, 'PRODUCT_MANAGE') && ['products', 'Produtos', Package],
+    can(user, 'COMPANY_MANAGE') && ['companies', 'Empresas', Building2],
+    can(user, 'CARRIER_MANAGE') && ['carriers', 'Transportadoras', Truck],
+    can(user, 'CREDENTIAL_MANAGE') && ['credentials', 'Credenciais', KeyRound]
+  ].filter(Boolean);
 
   const items = [
     ...operationItems,
-    ...(user?.role === 'ADMIN' ? adminItems : []),
+    ...adminItems,
     ['password', 'Alterar senha', ShieldCheck]
   ];
 
@@ -219,14 +407,16 @@ function Layout({ children, setPage, page, user }) {
 
   return (
     <div className="app">
-      <DeliveryNotifications />
       <aside>
         <div className="sideBrand"><Truck size={25} /><h2>FreteHub</h2></div>
 
         <div className="userSummary">
-          <strong>{user?.name || user?.email}</strong>
+          <div className="userSummaryTop">
+            <strong>{user?.name || user?.email}</strong>
+            {can(user, 'TRACKING_VIEW') && <NotificationCenter setPage={setPage} />}
+          </div>
           <small>{user?.email}</small>
-          <span className="badge badge-alert">{user?.role === 'ADMIN' ? 'Administrador' : 'Usuário'}</span>
+          <span className="badge badge-alert">{roleLabel(user?.role)}</span>
         </div>
 
         {items.map(([id, label, Icon]) => (
@@ -526,6 +716,8 @@ function Companies() {
     uf: '',
     telefone: '',
     email: '',
+    logoUrl: '',
+    clearLogoFile: false,
     ativo: true
   };
 
@@ -533,6 +725,10 @@ function Companies() {
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState('');
+  const [logoFile, setLogoFile] = useState(null);
+  const [logoPreview, setLogoPreview] = useState('');
 
   async function load() {
     try {
@@ -548,6 +744,9 @@ function Companies() {
   function clearForm() {
     setEditingId(null);
     setForm(emptyForm);
+    setLogoFile(null);
+    setLogoPreview('');
+    setLookupMessage('');
   }
 
   function edit(company) {
@@ -566,18 +765,83 @@ function Companies() {
       uf: company.uf || '',
       telefone: company.telefone || '',
       email: company.email || '',
+      logoUrl: company.logoUrl || '',
+      clearLogoFile: false,
       ativo: company.ativo !== false
     });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setLogoFile(null);
+    setLogoPreview(assetUrl(company.effectiveLogoUrl));
+    setLookupMessage('');
+    document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function lookupCnpj() {
+    const cnpj = String(form.cnpj || '').replace(/\D/g, '');
+    if (cnpj.length !== 14) {
+      setLookupMessage('Informe um CNPJ com 14 dígitos para consultar.');
+      return;
+    }
+    setLookupLoading(true);
+    setLookupMessage('Consultando dados cadastrais...');
+    try {
+      const response = await api.get(`/companies/lookup/cnpj/${cnpj}`);
+      const data = response.data || {};
+      setForm((current) => ({
+        ...current,
+        cnpj,
+        razaoSocial: data.razaoSocial || current.razaoSocial,
+        nomeFantasia: data.nomeFantasia || current.nomeFantasia,
+        inscricaoEstadual: data.inscricaoEstadual || current.inscricaoEstadual,
+        cep: data.cep || current.cep,
+        endereco: data.endereco || current.endereco,
+        numero: data.numero || current.numero,
+        complemento: data.complemento || current.complemento,
+        bairro: data.bairro || current.bairro,
+        cidade: data.cidade || current.cidade,
+        uf: String(data.uf || current.uf).toUpperCase(),
+        telefone: data.telefone || current.telefone,
+        email: data.email || current.email
+      }));
+      setLookupMessage(
+        `Dados preenchidos via ${data.provider || 'consulta cadastral'}${data.situacaoCadastral ? ` · Situação: ${data.situacaoCadastral}` : ''}. Revise antes de salvar.`
+      );
+    } catch (error) {
+      setLookupMessage(error.response?.data?.error || error.response?.data?.message || 'Não foi possível consultar o CNPJ.');
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  async function selectLogoFile(event) {
+    const file = event.target.files?.[0] || null;
+    if (!file) return;
+    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+      alert('Use uma imagem PNG, JPG ou JPEG.');
+      event.target.value = '';
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      alert('A logomarca deve ter no máximo 5 MB.');
+      event.target.value = '';
+      return;
+    }
+    setLogoFile(file);
+    setForm((current) => ({ ...current, clearLogoFile: false }));
+    setLogoPreview(await fileAsDataUrl(file));
   }
 
   async function save(event) {
     event.preventDefault();
     setLoading(true);
-
     try {
-      if (editingId) await api.put(`/companies/${editingId}`, form);
-      else await api.post('/companies', form);
+      const payload = { ...form };
+      if (logoFile) {
+        payload.logoFileName = logoFile.name;
+        payload.logoMimeType = logoFile.type;
+        payload.logoDataBase64 = await fileAsDataUrl(logoFile);
+      }
+      if (editingId) await api.put(`/companies/${editingId}`, payload);
+      else await api.post('/companies', payload);
       clearForm();
       await load();
     } catch (error) {
@@ -588,23 +852,14 @@ function Companies() {
   }
 
   async function activate(id) {
-    try {
-      await api.post(`/companies/${id}/activate`);
-      await load();
-    } catch (error) {
-      alert(error.response?.data?.message || 'Erro ao ativar empresa.');
-    }
+    try { await api.post(`/companies/${id}/activate`); await load(); }
+    catch (error) { alert(error.response?.data?.message || 'Erro ao ativar empresa.'); }
   }
 
   async function deactivate(id) {
     if (!confirm('Desativar esta empresa e bloquear os usuários vinculados?')) return;
-
-    try {
-      await api.post(`/companies/${id}/deactivate`);
-      await load();
-    } catch (error) {
-      alert(error.response?.data?.message || 'Erro ao desativar empresa.');
-    }
+    try { await api.post(`/companies/${id}/deactivate`); await load(); }
+    catch (error) { alert(error.response?.data?.message || 'Erro ao desativar empresa.'); }
   }
 
   async function remove(company) {
@@ -613,7 +868,6 @@ function Companies() {
       'Esta ação também excluirá cotações, trackings, credenciais e usuários comuns vinculados.'
     );
     if (!accepted) return;
-
     try {
       await api.delete(`/companies/${company.id}`);
       if (editingId === company.id) clearForm();
@@ -631,9 +885,14 @@ function Companies() {
         value={form[name] || ''}
         maxLength={options.maxLength}
         required={options.required}
+        onBlur={options.onBlur}
         onChange={(event) => setForm({
           ...form,
-          [name]: name === 'uf' ? event.target.value.toUpperCase() : event.target.value
+          [name]: name === 'uf'
+            ? event.target.value.toUpperCase()
+            : ['cnpj', 'cep'].includes(name)
+              ? event.target.value.replace(/\D/g, '')
+              : event.target.value
         })}
       />
     </label>
@@ -644,16 +903,39 @@ function Companies() {
       <div className="pageHeader">
         <div>
           <h1>Empresas</h1>
-          <p>Cadastre, edite, ative, desative ou exclua empresas da plataforma.</p>
+          <p>Cadastre empresas, consulte o CNPJ e configure a identidade visual usada nas propostas.</p>
         </div>
       </div>
 
       <form className="card formGrid" onSubmit={save}>
         {field('razaoSocial', 'Razão social', { required: true, className: 'fieldSpan2' })}
         {field('nomeFantasia', 'Nome fantasia')}
-        {field('cnpj', 'CNPJ', { required: true })}
+
+        <label className="fieldLabel cnpjLookupField">
+          CNPJ
+          <div className="inlineFieldAction">
+            <input
+              value={form.cnpj}
+              maxLength="14"
+              required
+              inputMode="numeric"
+              onChange={(event) => {
+                setLookupMessage('');
+                setForm({ ...form, cnpj: event.target.value.replace(/\D/g, '') });
+              }}
+              onBlur={() => {
+                if (!editingId && String(form.cnpj || '').replace(/\D/g, '').length === 14 && !form.razaoSocial) lookupCnpj();
+              }}
+            />
+            <button type="button" className="btn-secondary" disabled={lookupLoading} onClick={lookupCnpj}>
+              {lookupLoading ? 'Consultando...' : 'Consultar CNPJ'}
+            </button>
+          </div>
+          {lookupMessage && <small className={lookupMessage.includes('Não foi') || lookupMessage.includes('Informe') ? 'lookupError' : 'lookupSuccess'}>{lookupMessage}</small>}
+        </label>
+
         {field('inscricaoEstadual', 'Inscrição estadual')}
-        {field('cep', 'CEP', { required: true })}
+        {field('cep', 'CEP', { required: true, maxLength: 8 })}
         {field('endereco', 'Endereço', { required: true, className: 'fieldSpan2' })}
         {field('numero', 'Número')}
         {field('complemento', 'Complemento')}
@@ -663,21 +945,43 @@ function Companies() {
         {field('telefone', 'Telefone')}
         {field('email', 'E-mail', { type: 'email' })}
 
+        <div className="fieldSpan companyBrandingBox">
+          <div className="companyBrandingFields">
+            {field('logoUrl', 'URL da logomarca (opcional)', { className: 'logoUrlField' })}
+            <label className="fieldLabel">
+              Anexar logomarca
+              <input type="file" accept="image/png,image/jpeg" onChange={selectLogoFile} />
+              <small>PNG, JPG ou JPEG, até 5 MB. O arquivo anexado tem prioridade sobre a URL.</small>
+            </label>
+          </div>
+          <div className="companyLogoPanel">
+            {logoPreview || form.logoUrl ? (
+              <img className="companyLogoLargePreview" src={logoPreview || form.logoUrl} alt="Prévia da logomarca" />
+            ) : <span className="logoEmptyState">Nenhuma logomarca selecionada</span>}
+            {editingId && logoPreview && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  setLogoFile(null);
+                  setLogoPreview(form.logoUrl || '');
+                  setForm((current) => ({ ...current, clearLogoFile: true }));
+                }}
+              >Remover arquivo anexado</button>
+            )}
+          </div>
+        </div>
+
         <label className="fieldLabel">
           Status
-          <select
-            value={form.ativo ? 'true' : 'false'}
-            onChange={(event) => setForm({ ...form, ativo: event.target.value === 'true' })}
-          >
+          <select value={form.ativo ? 'true' : 'false'} onChange={(event) => setForm({ ...form, ativo: event.target.value === 'true' })}>
             <option value="true">Ativa</option>
             <option value="false">Inativa</option>
           </select>
         </label>
 
         <div className="formActions fieldSpan">
-          <button type="submit" disabled={loading}>
-            {loading ? 'Salvando...' : editingId ? 'Salvar alterações' : 'Cadastrar empresa'}
-          </button>
+          <button type="submit" disabled={loading}>{loading ? 'Salvando...' : editingId ? 'Salvar alterações' : 'Cadastrar empresa'}</button>
           {editingId && <button type="button" className="btn-secondary" onClick={clearForm}>Cancelar edição</button>}
         </div>
       </form>
@@ -685,28 +989,23 @@ function Companies() {
       <div className="card tableCard">
         <div className="tableScroll">
           <table>
-            <thead>
-              <tr><th>Empresa</th><th>CNPJ</th><th>Cidade/UF</th><th>Status</th><th>Ações</th></tr>
-            </thead>
+            <thead><tr><th>Empresa</th><th>Logomarca</th><th>CNPJ</th><th>Cidade/UF</th><th>Status</th><th>Ações</th></tr></thead>
             <tbody>
               {rows.map((company) => (
                 <tr key={company.id}>
                   <td><strong>{company.nomeFantasia || company.razaoSocial}</strong><br /><small>{company.razaoSocial}</small></td>
+                  <td>{company.effectiveLogoUrl ? <img className="companyLogoPreview" src={assetUrl(company.effectiveLogoUrl)} alt={`Logo ${company.nomeFantasia || company.razaoSocial}`} /> : '-'}</td>
                   <td>{company.cnpj}</td>
                   <td>{company.cidade}/{company.uf}</td>
                   <td><span className={`badge ${company.ativo ? 'badge-success' : 'badge-error'}`}>{company.ativo ? 'Ativa' : 'Inativa'}</span></td>
                   <td className="actionsCell">
                     <button type="button" onClick={() => edit(company)}>Editar</button>
-                    {company.ativo ? (
-                      <button type="button" className="btn-secondary" onClick={() => deactivate(company.id)}>Desativar</button>
-                    ) : (
-                      <button type="button" onClick={() => activate(company.id)}>Ativar</button>
-                    )}
+                    {company.ativo ? <button type="button" className="btn-secondary" onClick={() => deactivate(company.id)}>Desativar</button> : <button type="button" onClick={() => activate(company.id)}>Ativar</button>}
                     <button type="button" className="btn-danger" onClick={() => remove(company)}>Excluir</button>
                   </td>
                 </tr>
               ))}
-              {!rows.length && <tr><td colSpan="5">Nenhuma empresa cadastrada.</td></tr>}
+              {!rows.length && <tr><td colSpan="6">Nenhuma empresa cadastrada.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1375,7 +1674,7 @@ function ProductsAdmin() {
 
 function UsersAdmin() {
   const loggedUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const emptyForm = { name: '', email: '', initialPassword: '', role: 'USER', companyId: '', active: true };
+  const emptyForm = { name: '', email: '', initialPassword: '', role: 'OPERATOR', companyId: '', active: true };
   const [rows, setRows] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [editingId, setEditingId] = useState(null);
@@ -1436,13 +1735,13 @@ function UsersAdmin() {
         <label className="fieldLabel">Nome<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
         <label className="fieldLabel">E-mail<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label>
         {!editingId && <label className="fieldLabel">Senha inicial<input type="password" minLength="8" value={form.initialPassword} onChange={(e) => setForm({ ...form, initialPassword: e.target.value })} required /></label>}
-        <label className="fieldLabel">Perfil<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}><option value="USER">Usuário</option><option value="ADMIN">Administrador</option></select></label>
+        <label className="fieldLabel">Perfil<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}><option value="OPERATOR">Operador</option><option value="VIEWER">Consulta</option><option value="ADMIN">Administrador</option></select></label>
         <label className="fieldLabel">Empresa<select value={form.companyId} onChange={(e) => setForm({ ...form, companyId: e.target.value })}><option value="">Sem vínculo</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.nomeFantasia || company.razaoSocial}</option>)}</select></label>
         <label className="fieldLabel">Status<select value={String(form.active)} onChange={(e) => setForm({ ...form, active: e.target.value === 'true' })}><option value="true">Ativo</option><option value="false">Inativo</option></select></label>
         <div className="formActions fieldSpan"><button type="submit">{editingId ? 'Salvar alterações' : 'Criar usuário'}</button>{editingId && <button type="button" className="btn-secondary" onClick={clearForm}>Cancelar</button>}</div>
       </form>
       <div className="card tableCard"><div className="tableScroll"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Empresa</th><th>Status</th><th>Senha</th><th>Ações</th></tr></thead>
-        <tbody>{rows.map((user) => <tr key={user.id}><td>{user.name}</td><td>{user.email}</td><td><span className="badge badge-alert">{user.role === 'ADMIN' ? 'Administrador' : 'Usuário'}</span></td><td>{user.company?.nomeFantasia || user.company?.razaoSocial || '-'}</td><td><span className={`badge ${user.active ? 'badge-success' : 'badge-error'}`}>{user.active ? 'Ativo' : 'Inativo'}</span></td><td>{user.mustChangePassword ? 'Alteração pendente' : 'Definida'}</td><td className="actionsCell"><button type="button" onClick={() => edit(user)}>Editar</button><button type="button" className="btn-secondary" onClick={() => resetPassword(user)}>Redefinir senha</button><button type="button" className="btn-danger" onClick={() => deactivate(user.id)}>Desativar</button></td></tr>)}</tbody>
+        <tbody>{rows.map((user) => <tr key={user.id}><td>{user.name}</td><td>{user.email}</td><td><span className="badge badge-alert">{roleLabel(user.role)}</span></td><td>{user.company?.nomeFantasia || user.company?.razaoSocial || '-'}</td><td><span className={`badge ${user.active ? 'badge-success' : 'badge-error'}`}>{user.active ? 'Ativo' : 'Inativo'}</span></td><td>{user.mustChangePassword ? 'Alteração pendente' : 'Definida'}</td><td className="actionsCell"><button type="button" onClick={() => edit(user)}>Editar</button><button type="button" className="btn-secondary" onClick={() => resetPassword(user)}>Redefinir senha</button><button type="button" className="btn-danger" onClick={() => deactivate(user.id)}>Desativar</button></td></tr>)}</tbody>
       </table></div></div>
     </>
   );
@@ -1483,6 +1782,142 @@ function ChangePassword({ user, onChanged }) {
 }
 
 
+function ProposalModal({ quote, onClose, onSent }) {
+  const [form, setForm] = useState({
+    to: '',
+    cc: '',
+    subject: `Proposta de frete #${quote?.id || ''}`,
+    message: 'Olá,\n\nSegue em anexo a proposta de frete solicitada.\n\nAtenciosamente,',
+    pdf: true,
+    excel: false
+  });
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event) {
+    event.preventDefault();
+    setError('');
+    if (!form.to.trim()) {
+      setError('Informe ao menos um destinatário.');
+      return;
+    }
+    if (!form.pdf && !form.excel) {
+      setError('Selecione PDF, Excel ou ambos.');
+      return;
+    }
+
+    setSending(true);
+    try {
+      const response = await api.post(`/quotes/${quote.id}/send-proposal`, {
+        to: form.to,
+        cc: form.cc,
+        subject: form.subject,
+        message: form.message,
+        formats: [form.pdf ? 'pdf' : null, form.excel ? 'excel' : null].filter(Boolean)
+      });
+      alert(response.data?.message || 'Proposta enviada por e-mail.');
+      onSent?.(response.data?.proposal);
+      onClose();
+    } catch (requestError) {
+      setError(
+        requestError.response?.data?.error ||
+        requestError.response?.data?.message ||
+        'Não foi possível enviar a proposta.'
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (!quote) return null;
+
+  return (
+    <div className="modalOverlay" onClick={onClose}>
+      <form className="modalContent proposalModal" onSubmit={submit} onClick={(event) => event.stopPropagation()}>
+        <div className="modalHeader">
+          <div>
+            <h2>Enviar proposta #{quote.id}</h2>
+            <small>O envio utilizará o provedor de e-mail configurado no FreteHub.</small>
+          </div>
+          <button type="button" className="btn-secondary" onClick={onClose}><X size={16} /> Fechar</button>
+        </div>
+
+        <div className="proposalFormGrid">
+          <label className="fieldLabel fieldSpan2">
+            Destinatário(s)
+            <input
+              type="text"
+              value={form.to}
+              onChange={(event) => setForm({ ...form, to: event.target.value })}
+              placeholder="cliente@empresa.com.br; outro@empresa.com.br"
+              required
+            />
+            <small>Separe vários endereços por ponto e vírgula ou vírgula.</small>
+          </label>
+
+          <label className="fieldLabel fieldSpan2">
+            Cópia (CC)
+            <input
+              type="text"
+              value={form.cc}
+              onChange={(event) => setForm({ ...form, cc: event.target.value })}
+              placeholder="opcional@empresa.com.br"
+            />
+          </label>
+
+          <label className="fieldLabel fieldSpan">
+            Assunto
+            <input
+              type="text"
+              value={form.subject}
+              onChange={(event) => setForm({ ...form, subject: event.target.value })}
+              required
+            />
+          </label>
+
+          <label className="fieldLabel fieldSpan">
+            Mensagem
+            <textarea
+              rows="7"
+              value={form.message}
+              onChange={(event) => setForm({ ...form, message: event.target.value })}
+            />
+          </label>
+
+          <div className="proposalAttachmentOptions fieldSpan">
+            <strong>Arquivos anexados</strong>
+            <label className="checkboxLabel">
+              <input
+                type="checkbox"
+                checked={form.pdf}
+                onChange={(event) => setForm({ ...form, pdf: event.target.checked })}
+              />
+              <FileText size={17} /> PDF com logomarca
+            </label>
+            <label className="checkboxLabel">
+              <input
+                type="checkbox"
+                checked={form.excel}
+                onChange={(event) => setForm({ ...form, excel: event.target.checked })}
+              />
+              <FileSpreadsheet size={17} /> Excel padronizado
+            </label>
+          </div>
+        </div>
+
+        {error && <div className="formError">{error}</div>}
+
+        <div className="formActions">
+          <button type="submit" disabled={sending}>
+            <Mail size={17} /> {sending ? 'Enviando...' : 'Enviar proposta'}
+          </button>
+          <button type="button" className="btn-secondary" onClick={onClose}>Cancelar</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function Quote({ user }) {
   const [companies, setCompanies] = useState([]);
   const [carriers, setCarriers] = useState([]);
@@ -1491,6 +1926,9 @@ function Quote({ user }) {
   const [loadingQuote, setLoadingQuote] = useState(false);
   const [savingQuote, setSavingQuote] = useState(false);
   const [loadingCarriers, setLoadingCarriers] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [proposalQuote, setProposalQuote] = useState(null);
+  const [frequentRecipients, setFrequentRecipients] = useState([]);
   const quoteRequestInProgress = useRef(false);
 
   const [form, setForm] = useState({
@@ -1531,6 +1969,11 @@ function Quote({ user }) {
 
   function onlyNumbers(value) {
     return String(value || '').replace(/\D/g, '');
+  }
+
+  function validDocumentLength(value) {
+    const document = onlyNumbers(value);
+    return document.length === 11 || document.length === 14;
   }
 
   function sanitizeNumber(value) {
@@ -1586,42 +2029,46 @@ function parseCurrencyBR(value) {
 async function fetchCnpjData(cnpj) {
   try {
     const clean = onlyNumbers(cnpj);
-
     if (clean.length !== 14) return;
-
-    const response = await fetch(
-      `https://brasilapi.com.br/api/cnpj/v1/${clean}`
-    );
-
-    if (!response.ok) {
-      alert('CNPJ não encontrado na BrasilAPI.');
-      return;
-    }
-
-    const data = await response.json();
-
+    const response = await api.get(`/companies/lookup/cnpj/${clean}`);
+    const data = response.data || {};
     setForm((prev) => ({
       ...prev,
-      razaoSocialDestinatario: data.razao_social || '',
-      enderecoDestino: data.logradouro || '',
-      cidadeDestino: data.municipio || '',
+      razaoSocialDestinatario: data.razaoSocial || data.nomeFantasia || '',
+      enderecoDestino: [data.endereco, data.numero].filter(Boolean).join(', '),
+      cidadeDestino: data.cidade || '',
       ufDestino: data.uf || '',
       cepDestino: onlyNumbers(data.cep || '')
     }));
   } catch (error) {
-    console.error('Erro ao consultar CNPJ:', error);
-    alert('Erro ao consultar CNPJ.');
+    alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao consultar CNPJ.');
   }
+}
+
+function applyFrequentRecipient(value) {
+  const recipient = frequentRecipients.find((item) => item.cnpj === value);
+  if (!recipient) return;
+  setForm((current) => ({
+    ...current,
+    cnpjDestinatario: recipient.cnpj || '',
+    razaoSocialDestinatario: recipient.razaoSocial || '',
+    cepDestino: recipient.cep || '',
+    enderecoDestino: recipient.endereco || '',
+    cidadeDestino: recipient.cidade || '',
+    ufDestino: recipient.uf || ''
+  }));
 }
 
   useEffect(() => {
     Promise.all([
       api.get('/companies'),
-      api.get('/products?limit=500')
+      api.get('/products?limit=500'),
+      api.get('/quotes/recipients/frequent')
     ])
-      .then(([companiesResponse, productsResponse]) => {
+      .then(([companiesResponse, productsResponse, recipientsResponse]) => {
         setCompanies(companiesResponse.data || []);
         setProducts(productsResponse.data || []);
+        setFrequentRecipients(recipientsResponse.data || []);
 
         if (companiesResponse.data.length === 1) {
           setForm((current) => ({
@@ -1665,6 +2112,7 @@ async function fetchCnpjData(cnpj) {
   }, [form.companyId]);
 
   function upd(k, v) {
+    setFormError('');
     setForm((prev) => ({ ...prev, [k]: v }));
   }
 
@@ -1816,23 +2264,44 @@ async function fetchCnpjData(cnpj) {
     return null;
   }
 
+  function validateQuoteForm() {
+    const errors = [];
+    const selectedCompany = companies.find((company) => Number(company.id) === Number(form.companyId));
+
+    if (!form.companyId) errors.push('Selecione a empresa remetente.');
+    if (selectedCompany && onlyNumbers(selectedCompany.cnpj).length !== 14) {
+      errors.push('O CNPJ da empresa remetente está incompleto. Corrija o cadastro da empresa.');
+    }
+    if (selectedCompany && onlyNumbers(selectedCompany.cep).length !== 8) {
+      errors.push('O CEP da empresa remetente está incompleto. Corrija o cadastro da empresa.');
+    }
+    if (!form.carrierIds.length) errors.push('Selecione pelo menos uma transportadora.');
+    if (!validDocumentLength(form.cnpjDestinatario)) errors.push('Informe o CPF ou CNPJ completo do destinatário.');
+    if (!String(form.razaoSocialDestinatario || '').trim()) errors.push('Informe a razão social ou o nome do destinatário.');
+    if (onlyNumbers(form.cepDestino).length !== 8) errors.push('Informe o CEP de destino com 8 dígitos.');
+    if (!String(form.enderecoDestino || '').trim()) errors.push('Informe o endereço do destinatário.');
+    if (!String(form.cidadeDestino || '').trim()) errors.push('Informe a cidade do destinatário.');
+    if (!/^[A-Z]{2}$/.test(String(form.ufDestino || '').trim().toUpperCase())) errors.push('Informe a UF do destinatário.');
+    if (parseCurrencyBR(form.valorMercadoria) <= 0) errors.push('Informe um valor de mercadoria maior que zero.');
+    if (!String(form.modal || '').trim()) errors.push('Informe o modal da cotação.');
+
+    if (form.tipoFrete === 'TERCEIROS') {
+      if (!validDocumentLength(form.cnpjTerceiro)) errors.push('Informe o CPF ou CNPJ completo do terceiro pagador.');
+      if (!String(form.razaoSocialTerceiro || '').trim()) errors.push('Informe o nome ou a razão social do terceiro pagador.');
+    }
+
+    const volumeError = validateVolumeItems();
+    if (volumeError) errors.push(volumeError);
+    return errors;
+  }
+
   async function submit() {
-  if (!form.companyId) {
-    alert('Selecione uma empresa.');
+  const validationErrors = validateQuoteForm();
+  if (validationErrors.length) {
+    setFormError(validationErrors.map((error) => `• ${error}`).join('\n'));
     return;
   }
-
-  if (!form.carrierIds.length) {
-    alert('Selecione pelo menos uma transportadora.');
-    return;
-  }
-
-  const volumeValidationMessage = validateVolumeItems();
-
-  if (volumeValidationMessage) {
-    alert(volumeValidationMessage);
-    return;
-  }
+  setFormError('');
 
   const selectedCompany = companies.find(
   (c) => Number(c.id) === Number(form.companyId)
@@ -1949,35 +2418,29 @@ const documentoPagador =
       alert('Salve a cotação antes de exportar para Excel.');
       return;
     }
-
     try {
-      const response = await api.get(`/quotes/${result.id}/export-excel`, {
-        responseType: 'blob'
-      });
-
-      const blob = new Blob([response.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      });
-
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-
-      link.href = url;
-      link.setAttribute('download', `cotacao-${result.id}.xlsx`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-
-      window.URL.revokeObjectURL(url);
+      await downloadQuoteDocument(result, 'excel');
     } catch (error) {
-      console.error('Erro ao exportar Excel:', error);
-      alert('Erro ao exportar Excel. Verifique o console ou o backend.');
+      alert(error.response?.data?.message || 'Erro ao exportar o Excel.');
+    }
+  }
+
+  async function exportPdf() {
+    if (!result?.saved || !result?.id) {
+      alert('Salve a cotação antes de gerar o PDF.');
+      return;
+    }
+    try {
+      await downloadQuoteDocument(result, 'pdf');
+    } catch (error) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao gerar o PDF.');
     }
   }
 
   return (
     <>
       <h1>Cotação de Frete</h1>
+      {formError && <div className="formError quoteValidationSummary">{formError}</div>}
 
       <div className="card formGrid">
         <label className="fieldLabel">Tipo de frete
@@ -2027,6 +2490,17 @@ const documentoPagador =
             </label>
           </>
         )}
+
+        <label className="fieldLabel fieldSpan">Destinatários frequentes
+          <select defaultValue="" onChange={(event) => applyFrequentRecipient(event.target.value)}>
+            <option value="">Selecione para preencher os dados automaticamente</option>
+            {frequentRecipients.map((recipient) => (
+              <option key={recipient.cnpj} value={recipient.cnpj}>
+                {recipient.razaoSocial || recipient.cnpj} · {recipient.cidade || '-'} / {recipient.uf || '-'}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <label className="fieldLabel">CNPJ/CPF do destinatário
           <input
@@ -2140,6 +2614,7 @@ const documentoPagador =
               <input
                 value={i.descricao}
                 placeholder="Ex.: Impressora Epson L3250"
+                required
                 onChange={(e) => updateItem(idx, 'descricao', e.target.value)}
               />
             </label>
@@ -2149,6 +2624,7 @@ const documentoPagador =
               <input
                 value={i.comprimento}
                 placeholder="Ex.: 25"
+                required
                 inputMode="decimal"
                 onChange={(e) => updateItem(idx, 'comprimento', e.target.value)}
                 onBlur={() => normalizeItemNumber(idx, 'comprimento', 2)}
@@ -2160,6 +2636,7 @@ const documentoPagador =
               <input
                 value={i.largura}
                 placeholder="Ex.: 38"
+                required
                 inputMode="decimal"
                 onChange={(e) => updateItem(idx, 'largura', e.target.value)}
                 onBlur={() => normalizeItemNumber(idx, 'largura', 2)}
@@ -2171,6 +2648,7 @@ const documentoPagador =
               <input
                 value={i.altura}
                 placeholder="Ex.: 58"
+                required
                 inputMode="decimal"
                 onChange={(e) => updateItem(idx, 'altura', e.target.value)}
                 onBlur={() => normalizeItemNumber(idx, 'altura', 2)}
@@ -2182,6 +2660,7 @@ const documentoPagador =
               <input
                 value={i.peso}
                 placeholder="Ex.: 6"
+                required
                 inputMode="decimal"
                 onChange={(e) => updateItem(idx, 'peso', e.target.value)}
                 onBlur={() => normalizeItemNumber(idx, 'peso', 3)}
@@ -2193,6 +2672,7 @@ const documentoPagador =
               <input
                 value={i.quantidade}
                 placeholder="Ex.: 4"
+                required
                 inputMode="numeric"
                 onChange={(e) => updateItem(idx, 'quantidade', e.target.value)}
                 onBlur={() => normalizeItemNumber(idx, 'quantidade', 0)}
@@ -2375,21 +2855,43 @@ const documentoPagador =
                 </button>
 
                 {result.saved && (
-                  <button onClick={exportExcel}>
-                    <FileSpreadsheet size={16} />
-                    Exportar Excel
-                  </button>
+                  <>
+                    <button onClick={exportExcel}>
+                      <FileSpreadsheet size={16} />
+                      Exportar Excel
+                    </button>
+                    <button onClick={exportPdf}>
+                      <FileText size={16} />
+                      Exportar PDF
+                    </button>
+                    {can(user, 'QUOTE_SEND') && (
+                      <button onClick={() => setProposalQuote(result)}>
+                        <Mail size={16} />
+                        Enviar proposta
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </div>
           );
         })()}
+      {proposalQuote && (
+        <ProposalModal
+          quote={proposalQuote}
+          onClose={() => setProposalQuote(null)}
+        />
+      )}
     </>
   );
 }
 
 function TrackingPage({ user }) {
   const isAdmin = user?.role === 'ADMIN';
+  const canCreateTracking = can(user, 'TRACKING_CREATE');
+  const canCheckTracking = can(user, 'TRACKING_CHECK');
+  const canCreateProof = can(user, 'TRACKING_PROOF_CREATE');
+  const canDeleteProof = can(user, 'TRACKING_PROOF_DELETE');
   const [selectedTracking, setSelectedTracking] = useState(null);
   const [rows, setRows] = useState([]);
   const [companies, setCompanies] = useState([]);
@@ -2402,14 +2904,30 @@ function TrackingPage({ user }) {
   const [loadingTrackingCarriers, setLoadingTrackingCarriers] = useState(false);
   const [showAdminConfig, setShowAdminConfig] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
+  const [emailTestTo, setEmailTestTo] = useState(user?.email || '');
   const [adminConfig, setAdminConfig] = useState(null);
+  const [filterOptions, setFilterOptions] = useState({ companies: [], carriers: [], users: [], statuses: [] });
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 25, total: 0, totalPages: 1 });
+  const paginationRef = useRef(pagination);
+  const [uploadingProof, setUploadingProof] = useState(false);
+  const [proofForm, setProofForm] = useState({ file: null, externalUrl: '', description: '' });
   const [configForm, setConfigForm] = useState({
     jamefTrackingUrl: '',
     braspressTrackingUrl: '',
     camiloTrackingUrl: 'https://ssw.inf.br/2/ssw_resultSSW',
     emailNotificationsEnabled: true,
+    emailProvider: 'smtp',
     emailFrom: '',
     appUrl: '',
+    smtpHost: 'smtp.gmail.com',
+    smtpPort: '587',
+    smtpSecure: false,
+    smtpUser: '',
+    smtpPassword: '',
+    smtpFrom: '',
+    smtpReplyTo: '',
+    clearSmtpPassword: false,
     emailWebhookUrl: '',
     emailWebhookToken: '',
     resendApiKey: '',
@@ -2424,20 +2942,36 @@ function TrackingPage({ user }) {
     notaFiscal: '',
     pedido: '',
     conhecimento: '',
+    destinatarioNome: '',
     status: '',
     monitoringActive: true,
     checkIntervalMinutes: '60'
   };
 
   const [form, setForm] = useState(initialForm);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState({
     companyId: '',
     carrierId: '',
+    userId: '',
     documento: '',
     notaFiscal: '',
     pedido: '',
     conhecimento: '',
-    status: ''
+    destinatario: '',
+    status: '',
+    createdFrom: '',
+    createdTo: '',
+    predictionFrom: '',
+    predictionTo: '',
+    deliveryFrom: '',
+    deliveryTo: '',
+    delayed: false,
+    divergence: false,
+    hasError: false,
+    proof: '',
+    sortBy: 'updatedAt',
+    sortDir: 'desc'
   });
   const filtersRef = useRef(filters);
 
@@ -2445,17 +2979,51 @@ function TrackingPage({ user }) {
     filtersRef.current = filters;
   }, [filters]);
 
-  async function loadTrackings(params = filtersRef.current, silent = false) {
+  useEffect(() => {
+    paginationRef.current = pagination;
+  }, [pagination]);
+
+  const activeFilterCount = Object.entries(filters).filter(([key, value]) => {
+    if (['sortBy', 'sortDir'].includes(key)) return false;
+    return value !== '' && value !== false && value !== null && value !== undefined;
+  }).length;
+
+  async function loadTrackings(params = filtersRef.current, silent = false, requestedPage = paginationRef.current.page || 1) {
     if (!silent) setLoading(true);
     try {
-      const response = await api.get('/tracking', {
-        params: Object.fromEntries(Object.entries(params).filter(([, value]) => value !== ''))
-      });
-      setRows(response.data || []);
+      const queryParams = Object.fromEntries(
+        Object.entries({
+          ...params,
+          paged: true,
+          page: requestedPage,
+          pageSize: paginationRef.current.pageSize || 25
+        }).filter(([, value]) => value !== '' && value !== false && value !== null && value !== undefined)
+      );
+      const response = await api.get('/tracking', { params: queryParams });
+      const payload = response.data || {};
+      const loadedRows = Array.isArray(payload) ? payload : payload.items || [];
+      setRows(loadedRows);
+      if (!Array.isArray(payload) && payload.pagination) setPagination(payload.pagination);
+      const focusId = Number(sessionStorage.getItem('fretehubTrackingFocusId') || 0);
+      if (focusId) {
+        sessionStorage.removeItem('fretehubTrackingFocusId');
+        const focused = loadedRows.find((row) => Number(row.id) === focusId);
+        if (focused) openTimeline(focused);
+        else openTimeline({ id: focusId });
+      }
     } catch (error) {
       if (!silent) alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao consultar tracking.');
     } finally {
       if (!silent) setLoading(false);
+    }
+  }
+
+  async function loadFilterOptions(silent = false) {
+    try {
+      const response = await api.get('/tracking/filter-options');
+      setFilterOptions(response.data || { companies: [], carriers: [], users: [], statuses: [] });
+    } catch (error) {
+      if (!silent) alert(error.response?.data?.message || 'Erro ao carregar filtros do tracking.');
     }
   }
 
@@ -2471,8 +3039,17 @@ function TrackingPage({ user }) {
         braspressTrackingUrl: data.braspressTrackingUrl || '',
         camiloTrackingUrl: data.camiloTrackingUrl || 'https://ssw.inf.br/2/ssw_resultSSW',
         emailNotificationsEnabled: data.emailNotificationsEnabled !== false,
+        emailProvider: data.emailProvider || 'none',
         emailFrom: data.emailFrom || '',
         appUrl: data.appUrl || '',
+        smtpHost: data.smtpHost || 'smtp.gmail.com',
+        smtpPort: String(data.smtpPort || 587),
+        smtpSecure: Boolean(data.smtpSecure),
+        smtpUser: data.smtpUser || '',
+        smtpPassword: '',
+        smtpFrom: data.smtpFrom || '',
+        smtpReplyTo: data.smtpReplyTo || '',
+        clearSmtpPassword: false,
         emailWebhookUrl: data.emailWebhookUrl || '',
         emailWebhookToken: '',
         resendApiKey: '',
@@ -2510,11 +3087,12 @@ function TrackingPage({ user }) {
     }
 
     initialize();
-    loadTrackings({}, true);
+    loadTrackings({}, true, 1);
+    loadFilterOptions(true);
     loadAdminConfig(true);
 
     const timer = setInterval(
-      () => loadTrackings(filtersRef.current, true),
+      () => loadTrackings(filtersRef.current, true, paginationRef.current.page || 1),
       30000
     );
 
@@ -2525,8 +3103,23 @@ function TrackingPage({ user }) {
   }, []);
 
   useEffect(() => {
+    function handleOpenTracking(event) {
+      const trackingId = Number(event.detail?.trackingId || 0);
+      if (trackingId) openTimeline({ id: trackingId });
+    }
+
+    window.addEventListener('fretehub:open-tracking', handleOpenTracking);
+    return () => window.removeEventListener('fretehub:open-tracking', handleOpenTracking);
+  }, []);
+
+  useEffect(() => {
     let active = true;
     const companyId = Number(form.companyId || 0);
+
+    if (!canCreateTracking) {
+      setCarriers([]);
+      return () => { active = false; };
+    }
 
     if (!companyId) {
       setCarriers([]);
@@ -2563,7 +3156,7 @@ function TrackingPage({ user }) {
 
   async function searchTracking(event) {
     event.preventDefault();
-    await loadTrackings(filters);
+    await loadTrackings(filters, false, 1);
   }
 
   function resetForm() {
@@ -2579,6 +3172,8 @@ function TrackingPage({ user }) {
 
   async function saveTracking(event) {
     event.preventDefault();
+
+    if (!canCreateTracking) return alert('Seu perfil possui acesso somente para consulta.');
 
     if (!form.companyId) return alert('Selecione a empresa do tracking.');
     if (!form.carrierId) return alert('Selecione uma transportadora com tracking automático.');
@@ -2641,7 +3236,7 @@ function TrackingPage({ user }) {
       }
 
       resetForm();
-      await loadTrackings({}, true);
+      await loadTrackings(filtersRef.current, true, 1);
     } catch (error) {
       alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao salvar tracking.');
     } finally {
@@ -2658,6 +3253,7 @@ function TrackingPage({ user }) {
       notaFiscal: row.notaFiscal || '',
       pedido: row.pedido || '',
       conhecimento: row.conhecimento || '',
+      destinatarioNome: row.destinatarioNome || '',
       status: row.status === '-' ? '' : row.status || '',
       monitoringActive: Boolean(row.monitoringActive),
       checkIntervalMinutes: '60'
@@ -2670,11 +3266,11 @@ function TrackingPage({ user }) {
     try {
       const response = await api.post(`/tracking/${row.id}/check`);
       alert(`Monitoramento executado. Status atual: ${response.data?.status || 'consultado'}.`);
-      await loadTrackings(filtersRef.current, true);
+      await loadTrackings(filtersRef.current, true, paginationRef.current.page || 1);
       if (selectedTracking?.id === row.id) setSelectedTracking(response.data);
     } catch (error) {
       alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao forçar o monitoramento.');
-      await loadTrackings(filtersRef.current, true);
+      await loadTrackings(filtersRef.current, true, paginationRef.current.page || 1);
     } finally {
       setCheckingId(null);
     }
@@ -2689,7 +3285,7 @@ function TrackingPage({ user }) {
       alert('Tracking excluído.');
       if (selectedTracking?.id === row.id) setSelectedTracking(null);
       if (editingId === row.id) resetForm();
-      await loadTrackings(filtersRef.current, true);
+      await loadTrackings(filtersRef.current, true, paginationRef.current.page || 1);
     } catch (error) {
       alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao excluir tracking.');
     } finally {
@@ -2705,8 +3301,10 @@ function TrackingPage({ user }) {
       setAdminConfig(response.data);
       setConfigForm((current) => ({
         ...current,
+        smtpPassword: '',
         emailWebhookToken: '',
         resendApiKey: '',
+        clearSmtpPassword: false,
         clearEmailWebhookToken: false,
         clearResendApiKey: false
       }));
@@ -2715,6 +3313,19 @@ function TrackingPage({ user }) {
       alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao salvar configurações.');
     } finally {
       setSavingConfig(false);
+    }
+  }
+
+  async function testEmailConfiguration() {
+    if (!emailTestTo.trim()) return alert('Informe o e-mail que receberá o teste.');
+    setTestingEmail(true);
+    try {
+      const response = await api.post('/tracking/admin/email-test', { to: emailTestTo.trim() });
+      alert(`E-mail de teste enviado por ${response.data?.provider || 'provedor configurado'} para ${emailTestTo.trim()}.`);
+    } catch (error) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Falha no envio do e-mail de teste.');
+    } finally {
+      setTestingEmail(false);
     }
   }
 
@@ -2727,9 +3338,82 @@ function TrackingPage({ user }) {
     }
   }
 
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadDeliveryProof(event) {
+    event.preventDefault();
+    if (!selectedTracking?.id) return;
+    if (!proofForm.file && !proofForm.externalUrl.trim()) {
+      return alert('Selecione um arquivo ou informe o link do comprovante.');
+    }
+    if (proofForm.file && proofForm.file.size > 8 * 1024 * 1024) {
+      return alert('O comprovante deve ter no máximo 8 MB.');
+    }
+
+    setUploadingProof(true);
+    try {
+      const payload = {
+        externalUrl: proofForm.externalUrl.trim() || null,
+        description: proofForm.description.trim() || null
+      };
+      if (proofForm.file) {
+        payload.fileName = proofForm.file.name;
+        payload.mimeType = proofForm.file.type;
+        payload.dataBase64 = await fileToDataUrl(proofForm.file);
+      }
+      await api.post(`/tracking/${selectedTracking.id}/proofs`, payload);
+      setProofForm({ file: null, externalUrl: '', description: '' });
+      await openTimeline(selectedTracking);
+      await loadTrackings(filtersRef.current, true, paginationRef.current.page || 1);
+      alert('Comprovante anexado com sucesso.');
+    } catch (error) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao anexar comprovante.');
+    } finally {
+      setUploadingProof(false);
+    }
+  }
+
+  async function downloadDeliveryProof(proof) {
+    if (proof.externalUrl && !proof.hasFile) {
+      window.open(proof.externalUrl, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    try {
+      const response = await api.get(proof.downloadUrl, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = proof.fileName || `comprovante-${proof.id}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      alert(error.response?.data?.message || 'Erro ao baixar comprovante.');
+    }
+  }
+
+  async function removeDeliveryProof(proof) {
+    if (!window.confirm('Excluir este comprovante manual?')) return;
+    try {
+      await api.delete(`/tracking/${selectedTracking.id}/proofs/${proof.id}`);
+      await openTimeline(selectedTracking);
+      await loadTrackings(filtersRef.current, true, paginationRef.current.page || 1);
+    } catch (error) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao excluir comprovante.');
+    }
+  }
+
   function statusClass(row) {
     if (row.dataEntrega || String(row.status).toUpperCase().includes('ENTREG')) return 'badge-success';
-    if (row.lastCheckError) return 'badge-error';
+    if (row.lastCheckError || row.hasDivergence) return 'badge-error';
     return 'badge-alert';
   }
 
@@ -2745,11 +3429,11 @@ function TrackingPage({ user }) {
     : 'CNPJ do tomador';
 
   return (
-    <>
+    <div className="trackingPage">
       <div className="pageHeader">
         <div>
           <h1>Tracking de cargas</h1>
-          <p>Inclua a carga manualmente. O sistema consulta as transportadoras a cada 1 hora e registra as mudanças na timeline.</p>
+          <p>{canCreateTracking ? 'Inclua a carga manualmente. O sistema consulta as transportadoras a cada 1 hora e registra as mudanças na timeline.' : 'Consulte as cargas e acompanhe as ocorrências registradas na timeline.'}</p>
         </div>
         {isAdmin && (
           <button type="button" className="btn-secondary" onClick={() => setShowAdminConfig((current) => !current)}>
@@ -2759,9 +3443,11 @@ function TrackingPage({ user }) {
         )}
       </div>
 
-      <div className="formNotice">
-        Após salvar, a primeira consulta automática fica agendada para 1 hora. Para consultar sem esperar, use o botão <strong>Monitorar agora</strong> na carga desejada.
-      </div>
+      {canCreateTracking && (
+        <div className="formNotice">
+          Após salvar, a primeira consulta automática fica agendada para 1 hora. Para consultar sem esperar, use o botão <strong>Monitorar agora</strong> na carga desejada.
+        </div>
+      )}
 
       {isAdmin && showAdminConfig && (
         <form className="card formGrid trackingAdminConfig" onSubmit={saveAdminConfig}>
@@ -2780,8 +3466,8 @@ function TrackingPage({ user }) {
               <span className={`badge ${adminConfig?.camiloTrackingConfigured ? 'badge-success' : 'badge-error'}`}>
                 Camilo {adminConfig?.camiloTrackingConfigured ? 'configurada' : 'não configurada'}
               </span>
-              <span className={`badge ${adminConfig?.emailProvider !== 'não configurado' ? 'badge-success' : 'badge-alert'}`}>
-                E-mail: {adminConfig?.emailProvider || 'não configurado'}
+              <span className={`badge ${adminConfig?.emailProvider && adminConfig?.emailProvider !== 'none' ? 'badge-success' : 'badge-alert'}`}>
+                E-mail: {adminConfig?.emailProvider === 'smtp' ? 'Gmail/SMTP' : adminConfig?.emailProvider || 'não configurado'}
               </span>
             </div>
           </div>
@@ -2835,12 +3521,16 @@ function TrackingPage({ user }) {
           </label>
 
           <label className="fieldLabel">
-            Remetente do e-mail
-            <input
-              placeholder="FreteHub <notificacoes@seudominio.com.br>"
-              value={configForm.emailFrom}
-              onChange={(event) => setConfigForm({ ...configForm, emailFrom: event.target.value })}
-            />
+            Provedor de e-mail
+            <select
+              value={configForm.emailProvider}
+              onChange={(event) => setConfigForm({ ...configForm, emailProvider: event.target.value })}
+            >
+              <option value="none">Não enviar e-mails</option>
+              <option value="smtp">Gmail / SMTP</option>
+              <option value="webhook">Webhook</option>
+              <option value="resend">Resend</option>
+            </select>
           </label>
 
           <label className="fieldLabel fieldSpan checkboxLabel">
@@ -2849,56 +3539,177 @@ function TrackingPage({ user }) {
               checked={configForm.emailNotificationsEnabled}
               onChange={(event) => setConfigForm({ ...configForm, emailNotificationsEnabled: event.target.checked })}
             />
-            Ativar notificações de entrega por e-mail
+            Enviar e-mails de entrega, atraso, divergência e falha de consulta
           </label>
 
-          <label className="fieldLabel fieldSpan">
-            URL do webhook de e-mail
-            <input
-              type="url"
-              placeholder="Deixe vazio para usar a Resend"
-              value={configForm.emailWebhookUrl}
-              onChange={(event) => setConfigForm({ ...configForm, emailWebhookUrl: event.target.value })}
-            />
-          </label>
+          {configForm.emailProvider === 'smtp' && (
+            <>
+              <div className="fieldSpan formNotice smtpNotice">
+                Para Gmail, use <strong>smtp.gmail.com</strong>, porta <strong>587</strong>, STARTTLS e uma <strong>senha de aplicativo</strong>. A senha normal da conta não deve ser usada.
+              </div>
 
-          <label className="fieldLabel">
-            Token do webhook
-            <input
-              type="password"
-              placeholder={adminConfig?.emailWebhookTokenConfigured ? 'Token já configurado — digite apenas para substituir' : 'Token opcional'}
-              value={configForm.emailWebhookToken}
-              onChange={(event) => setConfigForm({ ...configForm, emailWebhookToken: event.target.value })}
-            />
-          </label>
+              <label className="fieldLabel">
+                Servidor SMTP
+                <input
+                  placeholder="smtp.gmail.com"
+                  value={configForm.smtpHost}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpHost: event.target.value })}
+                />
+              </label>
 
-          <label className="fieldLabel">
-            Chave da Resend
-            <input
-              type="password"
-              placeholder={adminConfig?.resendApiKeyConfigured ? 'Chave já configurada — digite apenas para substituir' : 're_...'}
-              value={configForm.resendApiKey}
-              onChange={(event) => setConfigForm({ ...configForm, resendApiKey: event.target.value })}
-            />
-          </label>
+              <label className="fieldLabel">
+                Porta SMTP
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={configForm.smtpPort}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpPort: event.target.value })}
+                />
+              </label>
 
-          <label className="fieldLabel checkboxLabel">
-            <input
-              type="checkbox"
-              checked={configForm.clearEmailWebhookToken}
-              onChange={(event) => setConfigForm({ ...configForm, clearEmailWebhookToken: event.target.checked })}
-            />
-            Remover token atual do webhook
-          </label>
+              <label className="fieldLabel checkboxLabel smtpSecureField">
+                <input
+                  type="checkbox"
+                  checked={configForm.smtpSecure}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpSecure: event.target.checked })}
+                />
+                SSL direto (normalmente porta 465)
+              </label>
 
-          <label className="fieldLabel checkboxLabel">
-            <input
-              type="checkbox"
-              checked={configForm.clearResendApiKey}
-              onChange={(event) => setConfigForm({ ...configForm, clearResendApiKey: event.target.checked })}
-            />
-            Remover chave atual da Resend
-          </label>
+              <label className="fieldLabel">
+                Usuário SMTP
+                <input
+                  type="email"
+                  placeholder="trackingcargas26@gmail.com"
+                  value={configForm.smtpUser}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpUser: event.target.value })}
+                />
+              </label>
+
+              <label className="fieldLabel">
+                Senha de aplicativo
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={adminConfig?.smtpPasswordConfigured ? 'Senha já configurada — digite somente para substituir' : 'Senha de aplicativo do Gmail'}
+                  value={configForm.smtpPassword}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpPassword: event.target.value })}
+                />
+                <small>{adminConfig?.smtpPasswordConfigured ? 'Uma senha SMTP está armazenada de forma criptografada.' : 'A senha será criptografada antes de ser salva.'}</small>
+              </label>
+
+              <label className="fieldLabel">
+                Remetente
+                <input
+                  placeholder="FreteHub <trackingcargas26@gmail.com>"
+                  value={configForm.smtpFrom}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpFrom: event.target.value })}
+                />
+              </label>
+
+              <label className="fieldLabel">
+                Responder para (opcional)
+                <input
+                  type="email"
+                  placeholder="atendimento@empresa.com.br"
+                  value={configForm.smtpReplyTo}
+                  onChange={(event) => setConfigForm({ ...configForm, smtpReplyTo: event.target.value })}
+                />
+              </label>
+
+              <label className="fieldLabel checkboxLabel">
+                <input
+                  type="checkbox"
+                  checked={configForm.clearSmtpPassword}
+                  onChange={(event) => setConfigForm({ ...configForm, clearSmtpPassword: event.target.checked })}
+                />
+                Remover a senha SMTP atual
+              </label>
+
+              <div className="fieldSpan emailTestBox">
+                <label className="fieldLabel">
+                  E-mail para teste
+                  <input
+                    type="email"
+                    placeholder="usuario@empresa.com.br"
+                    value={emailTestTo}
+                    onChange={(event) => setEmailTestTo(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={testEmailConfiguration}
+                  disabled={testingEmail || !adminConfig?.smtpConfigured}
+                >
+                  <Mail size={16} />
+                  {testingEmail ? 'Enviando...' : 'Enviar e-mail de teste'}
+                </button>
+                {!adminConfig?.smtpConfigured && <small>Salve a configuração SMTP antes de executar o teste.</small>}
+              </div>
+            </>
+          )}
+
+          {configForm.emailProvider === 'webhook' && (
+            <>
+              <label className="fieldLabel fieldSpan">
+                URL do webhook de e-mail
+                <input
+                  type="url"
+                  value={configForm.emailWebhookUrl}
+                  onChange={(event) => setConfigForm({ ...configForm, emailWebhookUrl: event.target.value })}
+                />
+              </label>
+              <label className="fieldLabel">
+                Token do webhook
+                <input
+                  type="password"
+                  placeholder={adminConfig?.emailWebhookTokenConfigured ? 'Token já configurado — digite apenas para substituir' : 'Token opcional'}
+                  value={configForm.emailWebhookToken}
+                  onChange={(event) => setConfigForm({ ...configForm, emailWebhookToken: event.target.value })}
+                />
+              </label>
+              <label className="fieldLabel checkboxLabel">
+                <input
+                  type="checkbox"
+                  checked={configForm.clearEmailWebhookToken}
+                  onChange={(event) => setConfigForm({ ...configForm, clearEmailWebhookToken: event.target.checked })}
+                />
+                Remover token atual do webhook
+              </label>
+            </>
+          )}
+
+          {configForm.emailProvider === 'resend' && (
+            <>
+              <label className="fieldLabel">
+                Remetente do e-mail
+                <input
+                  placeholder="FreteHub <notificacoes@seudominio.com.br>"
+                  value={configForm.emailFrom}
+                  onChange={(event) => setConfigForm({ ...configForm, emailFrom: event.target.value })}
+                />
+              </label>
+              <label className="fieldLabel">
+                Chave da Resend
+                <input
+                  type="password"
+                  placeholder={adminConfig?.resendApiKeyConfigured ? 'Chave já configurada — digite apenas para substituir' : 're_...'}
+                  value={configForm.resendApiKey}
+                  onChange={(event) => setConfigForm({ ...configForm, resendApiKey: event.target.value })}
+                />
+              </label>
+              <label className="fieldLabel checkboxLabel">
+                <input
+                  type="checkbox"
+                  checked={configForm.clearResendApiKey}
+                  onChange={(event) => setConfigForm({ ...configForm, clearResendApiKey: event.target.checked })}
+                />
+                Remover chave atual da Resend
+              </label>
+            </>
+          )}
 
           <div className="formActions fieldSpan">
             <button type="submit" disabled={savingConfig}>
@@ -2909,7 +3720,8 @@ function TrackingPage({ user }) {
         </form>
       )}
 
-      <form className="card formGrid" onSubmit={saveTracking}>
+      {canCreateTracking && (
+        <form className="card formGrid" onSubmit={saveTracking}>
         <h3 className="fieldSpan">{editingId ? `Editar monitoramento #${editingId}` : 'Novo monitoramento'}</h3>
 
         <label className="fieldLabel">
@@ -2944,6 +3756,7 @@ function TrackingPage({ user }) {
         <label className="fieldLabel">Nota Fiscal<input value={form.notaFiscal} onChange={(event) => setForm({ ...form, notaFiscal: event.target.value })} /></label>
         <label className="fieldLabel">Pedido<input value={form.pedido} onChange={(event) => setForm({ ...form, pedido: event.target.value })} /></label>
         <label className="fieldLabel">Conhecimento / CT-e<input value={form.conhecimento} onChange={(event) => setForm({ ...form, conhecimento: event.target.value })} /></label>
+        <label className="fieldLabel">Destinatário<input value={form.destinatarioNome} onChange={(event) => setForm({ ...form, destinatarioNome: event.target.value })} placeholder="Nome ou razão social" /></label>
 
         {isAdmin && editingId && (
           <>
@@ -2976,29 +3789,107 @@ function TrackingPage({ user }) {
             </span>
           )}
         </div>
-      </form>
+        </form>
+      )}
 
-      <form className="card trackingFilters" onSubmit={searchTracking}>
-        <h3>Pesquisar monitoramentos</h3>
-        {isAdmin && (
-          <select value={filters.companyId} onChange={(event) => setFilters({ ...filters, companyId: event.target.value })}>
-            <option value="">Todas as empresas</option>
-            {companies.map((company) => <option key={company.id} value={company.id}>{company.nomeFantasia || company.razaoSocial}</option>)}
-          </select>
+      <form className="card trackingFilters advancedTrackingFilters" onSubmit={searchTracking}>
+        <div className="trackingFilterHeader">
+          <button type="button" className="filterToggleButton" onClick={() => setFiltersOpen((open) => !open)} aria-expanded={filtersOpen}>
+            <span><Filter size={18} /> <strong>Filtros avançados</strong></span>
+            <span className="filterToggleMeta">
+              {pagination.total} resultado{pagination.total === 1 ? '' : 's'}
+              {activeFilterCount > 0 && <span className="activeFilterBadge">{activeFilterCount} ativo{activeFilterCount === 1 ? '' : 's'}</span>}
+              {filtersOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+            </span>
+          </button>
+          <div className="filterHeaderActions">
+            <button type="submit" disabled={loading}>{loading ? 'Pesquisando...' : 'Pesquisar'}</button>
+            <button type="button" className="btn-secondary" onClick={() => {
+              const empty = {
+                companyId: '', carrierId: '', userId: '', documento: '', notaFiscal: '', pedido: '',
+                conhecimento: '', destinatario: '', status: '', createdFrom: '', createdTo: '',
+                predictionFrom: '', predictionTo: '', deliveryFrom: '', deliveryTo: '', delayed: false,
+                divergence: false, hasError: false, proof: '', sortBy: 'updatedAt', sortDir: 'desc'
+              };
+              setFilters(empty);
+              filtersRef.current = empty;
+              loadTrackings(empty, true, 1);
+            }}>Limpar</button>
+          </div>
+        </div>
+
+        {filtersOpen && (
+          <div className="trackingFilterBody">
+            <div className="trackingFilterGrid">
+          <label className="fieldLabel">Empresa
+            <select value={filters.companyId} onChange={(event) => setFilters({ ...filters, companyId: event.target.value })}>
+              <option value="">Todas as empresas</option>
+              {(filterOptions.companies || []).map((company) => <option key={company.id} value={company.id}>{company.nomeFantasia || company.razaoSocial}</option>)}
+            </select>
+          </label>
+          <label className="fieldLabel">Transportadora
+            <select value={filters.carrierId} onChange={(event) => setFilters({ ...filters, carrierId: event.target.value })}>
+              <option value="">Todas as transportadoras</option>
+              {(filterOptions.carriers || []).map((carrier) => <option key={carrier.id} value={carrier.id}>{carrier.nome}</option>)}
+            </select>
+          </label>
+          <label className="fieldLabel">Usuário responsável
+            <select value={filters.userId} onChange={(event) => setFilters({ ...filters, userId: event.target.value })}>
+              <option value="">Todos os usuários</option>
+              {(filterOptions.users || []).map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+          </label>
+          <label className="fieldLabel">Status
+            <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
+              <option value="">Todos os status</option>
+              {(filterOptions.statuses || []).map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+          </label>
+          <label className="fieldLabel">Nota Fiscal<input placeholder="Número da NF" value={filters.notaFiscal} onChange={(event) => setFilters({ ...filters, notaFiscal: event.target.value })} /></label>
+          <label className="fieldLabel">Pedido<input placeholder="Número do pedido" value={filters.pedido} onChange={(event) => setFilters({ ...filters, pedido: event.target.value })} /></label>
+          <label className="fieldLabel">Conhecimento / CT-e<input placeholder="Número do CT-e" value={filters.conhecimento} onChange={(event) => setFilters({ ...filters, conhecimento: event.target.value })} /></label>
+          <label className="fieldLabel">Destinatário<input placeholder="Nome ou razão social" value={filters.destinatario} onChange={(event) => setFilters({ ...filters, destinatario: event.target.value })} /></label>
+          <label className="fieldLabel">CNPJ / CPF<input placeholder="Documento do tracking" value={filters.documento} onChange={(event) => setFilters({ ...filters, documento: event.target.value })} /></label>
+          <label className="fieldLabel">Comprovante
+            <select value={filters.proof} onChange={(event) => setFilters({ ...filters, proof: event.target.value })}>
+              <option value="">Com ou sem comprovante</option>
+              <option value="with">Com comprovante</option>
+              <option value="without">Sem comprovante</option>
+            </select>
+          </label>
+          <label className="fieldLabel">Criado de<input type="date" value={filters.createdFrom} onChange={(event) => setFilters({ ...filters, createdFrom: event.target.value })} /></label>
+          <label className="fieldLabel">Criado até<input type="date" value={filters.createdTo} onChange={(event) => setFilters({ ...filters, createdTo: event.target.value })} /></label>
+          <label className="fieldLabel">Previsão de<input type="date" value={filters.predictionFrom} onChange={(event) => setFilters({ ...filters, predictionFrom: event.target.value })} /></label>
+          <label className="fieldLabel">Previsão até<input type="date" value={filters.predictionTo} onChange={(event) => setFilters({ ...filters, predictionTo: event.target.value })} /></label>
+          <label className="fieldLabel">Entrega de<input type="date" value={filters.deliveryFrom} onChange={(event) => setFilters({ ...filters, deliveryFrom: event.target.value })} /></label>
+          <label className="fieldLabel">Entrega até<input type="date" value={filters.deliveryTo} onChange={(event) => setFilters({ ...filters, deliveryTo: event.target.value })} /></label>
+          <label className="fieldLabel">Ordenar por
+            <select value={filters.sortBy} onChange={(event) => setFilters({ ...filters, sortBy: event.target.value })}>
+              <option value="updatedAt">Última atualização</option>
+              <option value="createdAt">Data de cadastro</option>
+              <option value="previsaoEntrega">Previsão de entrega</option>
+              <option value="dataEntrega">Data de entrega</option>
+              <option value="status">Status</option>
+            </select>
+          </label>
+          <label className="fieldLabel">Ordem
+            <select value={filters.sortDir} onChange={(event) => setFilters({ ...filters, sortDir: event.target.value })}>
+              <option value="desc">Mais recentes primeiro</option>
+              <option value="asc">Mais antigos primeiro</option>
+            </select>
+          </label>
+        </div>
+
+            <div className="trackingFilterChecks">
+              <label className="checkboxLabel"><input type="checkbox" checked={filters.delayed} onChange={(event) => setFilters({ ...filters, delayed: event.target.checked })} /> Somente atrasadas</label>
+              <label className="checkboxLabel"><input type="checkbox" checked={filters.divergence} onChange={(event) => setFilters({ ...filters, divergence: event.target.checked })} /> Com divergência</label>
+              <label className="checkboxLabel"><input type="checkbox" checked={filters.hasError} onChange={(event) => setFilters({ ...filters, hasError: event.target.checked })} /> Com falha de consulta</label>
+            </div>
+          </div>
         )}
-        <input placeholder="Nota Fiscal" value={filters.notaFiscal} onChange={(event) => setFilters({ ...filters, notaFiscal: event.target.value })} />
-        <input placeholder="Pedido" value={filters.pedido} onChange={(event) => setFilters({ ...filters, pedido: event.target.value })} />
-        <input placeholder="Conhecimento / CT-e" value={filters.conhecimento} onChange={(event) => setFilters({ ...filters, conhecimento: event.target.value })} />
-        <input placeholder="Status" value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })} />
-        <button type="submit" disabled={loading}>{loading ? 'Pesquisando...' : 'Pesquisar'}</button>
-        <button type="button" className="btn-secondary" onClick={() => {
-          const empty = { companyId: '', carrierId: '', documento: '', notaFiscal: '', pedido: '', conhecimento: '', status: '' };
-          setFilters(empty);
-          loadTrackings({}, true);
-        }}>Limpar</button>
       </form>
 
-      <div className="card tableCard">
+      <div className="card tableCard trackingTableCard">
         <div className="tableScroll">
           <table>
             <thead>
@@ -3012,6 +3903,7 @@ function TrackingPage({ user }) {
                 <th>Previsão</th>
                 <th>Última ocorrência</th>
                 <th>Automação</th>
+                <th>Comprovantes</th>
                 <th>Timeline</th>
                 <th>Ações</th>
               </tr>
@@ -3027,7 +3919,7 @@ function TrackingPage({ user }) {
                     NF {row.notaFiscal || '-'}<br />
                     <small>Pedido {row.pedido || '-'} · CT-e {row.conhecimento || '-'}</small>
                   </td>
-                  <td>{row.cidade || '-'} / {row.uf || '-'}</td>
+                  <td>{row.cidade || '-'} / {row.uf || '-'}{row.destinatarioNome && <small className="trackingMeta compactMeta">Destinatário: {row.destinatarioNome}</small>}</td>
                   <td>{row.previsaoEntrega || '-'}</td>
                   <td>{row.ultimaOcorrencia || '-'}</td>
                   <td>
@@ -3042,19 +3934,26 @@ function TrackingPage({ user }) {
                     )}
                     {row.lastCheckError && <small className="trackingError">{row.lastCheckError}</small>}
                   </td>
+                  <td>
+                    <button type="button" className="btn-secondary proofCountButton" onClick={() => openTimeline(row)}>
+                      <Paperclip size={15} /> {row.comprovantesTotal || 0}
+                    </button>
+                  </td>
                   <td><button type="button" onClick={() => openTimeline(row)}>Ver timeline</button></td>
                   <td>
                     <div className="tableActions">
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => forceMonitoring(row)}
-                        disabled={checkingId === row.id || Boolean(row.dataEntrega)}
-                        title={row.dataEntrega ? 'Carga já entregue' : 'Consultar a transportadora imediatamente'}
-                      >
-                        <RefreshCw size={15} />
-                        {checkingId === row.id ? 'Consultando...' : 'Monitorar agora'}
-                      </button>
+                      {canCheckTracking && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => forceMonitoring(row)}
+                          disabled={checkingId === row.id || Boolean(row.dataEntrega)}
+                          title={row.dataEntrega ? 'Carga já entregue' : 'Consultar a transportadora imediatamente'}
+                        >
+                          <RefreshCw size={15} />
+                          {checkingId === row.id ? 'Consultando...' : 'Monitorar agora'}
+                        </button>
+                      )}
                       {isAdmin && (
                         <>
                           <button type="button" className="btn-secondary" onClick={() => startEdit(row)}>
@@ -3074,9 +3973,16 @@ function TrackingPage({ user }) {
                   </td>
                 </tr>
               ))}
-              {!rows.length && <tr><td colSpan={11}>Nenhum tracking encontrado.</td></tr>}
+              {!rows.length && <tr><td colSpan={12}>Nenhum tracking encontrado.</td></tr>}
             </tbody>
           </table>
+        </div>
+        <div className="trackingPagination">
+          <span>Página {pagination.page} de {pagination.totalPages} · {pagination.total} resultado{pagination.total === 1 ? '' : 's'}</span>
+          <div>
+            <button type="button" className="btn-secondary" disabled={pagination.page <= 1 || loading} onClick={() => loadTrackings(filtersRef.current, false, pagination.page - 1)}><ChevronLeft size={16} /> Anterior</button>
+            <button type="button" className="btn-secondary" disabled={pagination.page >= pagination.totalPages || loading} onClick={() => loadTrackings(filtersRef.current, false, pagination.page + 1)}>Próxima <ChevronRight size={16} /></button>
+          </div>
         </div>
       </div>
 
@@ -3089,7 +3995,7 @@ function TrackingPage({ user }) {
                 <small>{selectedTracking.transportadora} · NF {selectedTracking.notaFiscal || '-'}</small>
               </div>
               <div className="tableActions">
-                {!selectedTracking.dataEntrega && (
+                {canCheckTracking && !selectedTracking.dataEntrega && (
                   <button type="button" className="btn-secondary" onClick={() => forceMonitoring(selectedTracking)} disabled={checkingId === selectedTracking.id}>
                     <RefreshCw size={15} /> {checkingId === selectedTracking.id ? 'Consultando...' : 'Monitorar agora'}
                   </button>
@@ -3163,10 +4069,56 @@ function TrackingPage({ user }) {
               })}
               {!selectedTracking.eventos?.length && <p>Nenhuma ocorrência registrada.</p>}
             </div>
+
+            <section className="deliveryProofSection">
+              <div className="deliveryProofHeader">
+                <div>
+                  <h3><Paperclip size={18} /> Comprovantes de entrega</h3>
+                  <small>{selectedTracking.comprovantesTotal || 0} comprovante{selectedTracking.comprovantesTotal === 1 ? '' : 's'} vinculado{selectedTracking.comprovantesTotal === 1 ? '' : 's'}</small>
+                </div>
+              </div>
+
+              <div className="deliveryProofList">
+                {(selectedTracking.comprovantes || []).map((proof) => (
+                  <article className="deliveryProofCard" key={proof.id}>
+                    <span className="deliveryProofIcon"><FileText size={20} /></span>
+                    <div className="deliveryProofInfo">
+                      <strong>{proof.fileName || (proof.source === 'CARRIER' ? 'Comprovante da transportadora' : `Comprovante #${proof.id}`)}</strong>
+                      <span>{proof.description || (proof.source === 'CARRIER' ? 'Disponibilizado automaticamente pela transportadora.' : 'Anexado manualmente.')}</span>
+                      <small>Origem: {proof.source === 'CARRIER' ? 'Transportadora' : 'Manual'} · {new Date(proof.createdAt).toLocaleString('pt-BR')}{proof.uploadedBy?.name ? ` · ${proof.uploadedBy.name}` : ''}</small>
+                    </div>
+                    <div className="deliveryProofActions">
+                      {proof.hasFile && <button type="button" className="btn-secondary" onClick={() => downloadDeliveryProof(proof)}><Download size={15} /> Baixar</button>}
+                      {proof.externalUrl && <button type="button" className="btn-secondary" onClick={() => window.open(proof.externalUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={15} /> Abrir link</button>}
+                      {canDeleteProof && proof.source === 'MANUAL' && <button type="button" className="btn-danger" onClick={() => removeDeliveryProof(proof)}><Trash2 size={15} /> Excluir</button>}
+                    </div>
+                  </article>
+                ))}
+                {!selectedTracking.comprovantes?.length && <p className="proofEmpty">Nenhum comprovante disponível.</p>}
+              </div>
+
+              {canCreateProof && (
+                <form className="deliveryProofForm" onSubmit={uploadDeliveryProof}>
+                  <h4>Anexar comprovante manualmente</h4>
+                  <label className="fieldLabel">Arquivo (PDF, JPG ou PNG — até 8 MB)
+                    <input type="file" accept="application/pdf,image/jpeg,image/png" onChange={(event) => setProofForm({ ...proofForm, file: event.target.files?.[0] || null })} />
+                  </label>
+                  <label className="fieldLabel">Ou link externo
+                    <input type="url" placeholder="https://..." value={proofForm.externalUrl} onChange={(event) => setProofForm({ ...proofForm, externalUrl: event.target.value })} />
+                  </label>
+                  <label className="fieldLabel proofDescription">Observação
+                    <input placeholder="Ex.: canhoto assinado pelo destinatário" value={proofForm.description} onChange={(event) => setProofForm({ ...proofForm, description: event.target.value })} />
+                  </label>
+                  <div className="formActions proofFormActions">
+                    <button type="submit" disabled={uploadingProof}><Upload size={16} /> {uploadingProof ? 'Enviando...' : 'Anexar comprovante'}</button>
+                  </div>
+                </form>
+              )}
+            </section>
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -3175,6 +4127,7 @@ function HistoryPage({ user }) {
   const [loading, setLoading] = useState(true);
   const [selectedQuote, setSelectedQuote] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [proposalQuote, setProposalQuote] = useState(null);
   const isAdmin = user?.role === 'ADMIN';
 
   async function load() {
@@ -3234,24 +4187,22 @@ function HistoryPage({ user }) {
 
   async function exportQuote(quote, event = null) {
     event?.stopPropagation();
-
     try {
-      const response = await api.get(`/quotes/${quote.id}/export-excel`, { responseType: 'blob' });
-      const blob = new Blob([response.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `cotacao-${quote.id}.xlsx`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      await downloadQuoteDocument(quote, 'excel');
     } catch (error) {
-      alert(error.response?.data?.message || 'Erro ao exportar a cotação.');
+      alert(error.response?.data?.message || 'Erro ao exportar a cotação em Excel.');
     }
   }
+
+  async function exportPdf(quote, event = null) {
+    event?.stopPropagation();
+    try {
+      await downloadQuoteDocument(quote, 'pdf');
+    } catch (error) {
+      alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao gerar o PDF da cotação.');
+    }
+  }
+
 
   async function deleteQuote(quote, event = null) {
     event?.stopPropagation();
@@ -3275,32 +4226,16 @@ function HistoryPage({ user }) {
         </div>
       </div>
 
-      <div className="card tableCard">
+      <div className="card quoteHistoryCard">
         {loading ? <p>Carregando...</p> : (
-          <div className="tableScroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Realizada por</th>
-                  <th>Remetente</th>
-                  <th>Destino</th>
-                  <th>Frete</th>
-                  <th>Mercadoria</th>
-                  <th>Menor preço</th>
-                  <th>Menor prazo</th>
-                  <th>Data</th>
-                  <th>Ações</th>
-                </tr>
-              </thead>
-              <tbody>{quotes.map((quote) => {
-                const price = bestPrice(quote);
-                const deadline = bestDeadline(quote);
-
-                return (
-                  <tr
-                    key={quote.id}
-                    className="clickableRow"
+          <div className="quoteHistoryList">
+            {quotes.map((quote) => {
+              const price = bestPrice(quote);
+              const deadline = bestDeadline(quote);
+              return (
+                <article className="quoteHistoryItem" key={quote.id}>
+                  <div
+                    className="quoteHistoryClickable"
                     tabIndex={0}
                     role="button"
                     title="Clique para visualizar a cotação"
@@ -3312,32 +4247,53 @@ function HistoryPage({ user }) {
                       }
                     }}
                   >
-                    <td>#{quote.id}</td>
-                    <td>
-                      <strong>{quote.user?.name || '-'}</strong><br />
-                      <small>{quote.user?.email || '-'}</small>
-                    </td>
-                    <td>{quote.company?.nomeFantasia || quote.company?.razaoSocial}</td>
-                    <td>{quote.razaoSocialDestinatario || quote.cnpjDestinatario}<br /><small>{quote.cidadeDestino}/{quote.ufDestino}</small></td>
-                    <td>{quote.tipoFrete} · {quote.modal}</td>
-                    <td>{money(quote.valorMercadoria)}<br /><small>{quote.pesoTotal} kg · {quote.quantidadeVolumes} volumes</small></td>
-                    <td>{price ? <><strong>{money(price.valorFrete)}</strong><br /><small>{price.carrier?.nome}</small></> : '-'}</td>
-                    <td>{deadline ? <><strong>{deadline.prazo}</strong><br /><small>{deadline.carrier?.nome}</small></> : '-'}</td>
-                    <td>{new Date(quote.createdAt).toLocaleString('pt-BR')}</td>
-                    <td className="actionsCell" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" onClick={(event) => exportQuote(quote, event)}>
-                        <FileSpreadsheet size={15} /> Excel
-                      </button>
-                      {isAdmin && (
-                        <button type="button" className="btn-danger" onClick={(event) => deleteQuote(quote, event)}>
-                          Excluir
-                        </button>
+                    <div className="quoteHistoryIdentity">
+                      <strong>#{quote.id}</strong>
+                      <span>{new Date(quote.createdAt).toLocaleDateString('pt-BR')}</span>
+                      <small>{new Date(quote.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</small>
+                      <small>por {quote.user?.name || '-'}</small>
+                    </div>
+
+                    <div className="quoteHistoryRoute">
+                      <small>Rota</small>
+                      <strong>{quote.company?.nomeFantasia || quote.company?.razaoSocial || '-'}</strong>
+                      <span>→ {quote.razaoSocialDestinatario || quote.cnpjDestinatario || '-'}</span>
+                      <small>{quote.cidadeDestino || '-'} / {quote.ufDestino || '-'}</small>
+                    </div>
+
+                    <div className="quoteHistoryCargo">
+                      <small>Frete e mercadoria</small>
+                      <strong>{quote.tipoFrete} · {quote.modal}</strong>
+                      <span>{money(quote.valorMercadoria)}</span>
+                      <small>{quote.pesoTotal} kg · {quote.quantidadeVolumes} volume{Number(quote.quantidadeVolumes) === 1 ? '' : 's'}</small>
+                    </div>
+
+                    <div className="quoteHistoryBest">
+                      <small>Melhor opção</small>
+                      <strong>{price ? money(price.valorFrete) : '-'}</strong>
+                      <span>{price?.carrier?.nome || '-'}</span>
+                      <small>{deadline ? `${deadline.prazo} · ${deadline.carrier?.nome || '-'}` : 'Prazo não informado'}</small>
+                    </div>
+                  </div>
+
+                  <details className="quoteActionMenu" onClick={(event) => event.stopPropagation()}>
+                    <summary title="Ações da cotação"><MoreVertical size={18} /> <span>Ações</span></summary>
+                    <div className="quoteActionMenuPanel">
+                      <button type="button" onClick={() => openQuote(quote)}>Visualizar</button>
+                      <button type="button" onClick={(event) => exportQuote(quote, event)}><FileSpreadsheet size={15} /> Excel</button>
+                      <button type="button" onClick={(event) => exportPdf(quote, event)}><FileText size={15} /> PDF</button>
+                      {can(user, 'QUOTE_SEND') && (
+                        <button type="button" onClick={(event) => { event.stopPropagation(); setProposalQuote(quote); }}><Mail size={15} /> Enviar proposta</button>
                       )}
-                    </td>
-                  </tr>
-                );
-              })}</tbody>
-            </table>
+                      {isAdmin && (
+                        <button type="button" className="btn-danger" onClick={(event) => deleteQuote(quote, event)}>Excluir</button>
+                      )}
+                    </div>
+                  </details>
+                </article>
+              );
+            })}
+            {!quotes.length && <p className="quoteHistoryEmpty">Nenhuma cotação salva encontrada.</p>}
           </div>
         )}
       </div>
@@ -3364,6 +4320,14 @@ function HistoryPage({ user }) {
                 <button type="button" onClick={(event) => exportQuote(selectedQuote, event)}>
                   <FileSpreadsheet size={15} /> Exportar Excel
                 </button>
+                <button type="button" onClick={(event) => exportPdf(selectedQuote, event)}>
+                  <FileText size={15} /> Exportar PDF
+                </button>
+                {can(user, 'QUOTE_SEND') && (
+                  <button type="button" onClick={() => setProposalQuote(selectedQuote)}>
+                    <Mail size={15} /> Enviar proposta
+                  </button>
+                )}
                 <button type="button" className="btn-secondary" onClick={() => setSelectedQuote(null)}>Fechar</button>
               </div>
             </div>
@@ -3420,8 +4384,42 @@ function HistoryPage({ user }) {
                 </tbody>
               </table>
             </div>
+
+            {can(user, 'QUOTE_SEND') && (
+              <>
+                <h3>Envios da proposta</h3>
+                <div className="tableScroll quoteModalTable">
+                  <table>
+                    <thead><tr><th>Data</th><th>Enviado por</th><th>Destinatários</th><th>Arquivos</th><th>Status</th><th>Erro</th></tr></thead>
+                    <tbody>
+                      {(selectedQuote.proposalLogs || []).map((proposal) => (
+                        <tr key={proposal.id}>
+                          <td>{new Date(proposal.createdAt).toLocaleString('pt-BR')}</td>
+                          <td>{proposal.user?.name || '-'}</td>
+                          <td>{Array.isArray(proposal.recipients) ? proposal.recipients.join(', ') : '-'}</td>
+                          <td>{Array.isArray(proposal.formats) ? proposal.formats.join(' + ').toUpperCase() : '-'}</td>
+                          <td><span className={`badge ${proposal.status === 'SENT' ? 'badge-success' : proposal.status === 'ERROR' ? 'badge-error' : 'badge-alert'}`}>{proposal.status === 'SENT' ? 'Enviada' : proposal.status === 'ERROR' ? 'Erro' : 'Pendente'}</span></td>
+                          <td>{proposal.error || '-'}</td>
+                        </tr>
+                      ))}
+                      {!selectedQuote.proposalLogs?.length && <tr><td colSpan="6">Nenhum envio registrado.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         </div>
+      )}
+
+      {proposalQuote && (
+        <ProposalModal
+          quote={proposalQuote}
+          onClose={() => setProposalQuote(null)}
+          onSent={async () => {
+            if (selectedQuote?.id === proposalQuote.id) await openQuote(proposalQuote);
+          }}
+        />
       )}
     </>
   );
@@ -3436,7 +4434,7 @@ function App() {
   const [page, setPage] = useState(() => {
     const saved = localStorage.getItem('user');
     const savedUser = saved ? JSON.parse(saved) : null;
-    return savedUser?.mustChangePassword ? 'password' : 'quotes';
+    return defaultPageForUser(savedUser);
   });
 
   if (!user) {
@@ -3444,35 +4442,38 @@ function App() {
       <Login
         onLogin={(loggedUser) => {
           setUser(loggedUser);
-          setPage(loggedUser.mustChangePassword ? 'password' : 'quotes');
+          setPage(defaultPageForUser(loggedUser));
         }}
       />
     );
   }
 
   const pages = {
-      quotes: <Quote user={user} />,
-      history: <HistoryPage user={user} />,
-      tracking: <TrackingPage user={user} />,
-      companies: <Companies />,
-      carriers: <Carriers />,
-      credentials: <Credentials />,
-      products: <ProductsAdmin />,
-      users: <UsersAdmin />,
+      ...(can(user, 'QUOTE_CREATE') ? { quotes: <Quote user={user} /> } : {}),
+      ...(can(user, 'QUOTE_VIEW') ? { history: <HistoryPage user={user} /> } : {}),
+      ...(can(user, 'TRACKING_VIEW') ? { tracking: <TrackingPage user={user} /> } : {}),
+      ...(can(user, 'COMPANY_MANAGE') ? { companies: <Companies /> } : {}),
+      ...(can(user, 'CARRIER_MANAGE') ? { carriers: <Carriers /> } : {}),
+      ...(can(user, 'CREDENTIAL_MANAGE') ? { credentials: <Credentials /> } : {}),
+      ...(can(user, 'PRODUCT_MANAGE') ? { products: <ProductsAdmin /> } : {}),
+      ...(can(user, 'USER_MANAGE') ? { users: <UsersAdmin /> } : {}),
       password: (
         <ChangePassword
           user={user}
           onChanged={(updatedUser) => {
             setUser(updatedUser);
-            setPage('quotes');
+            setPage(defaultPageForUser(updatedUser));
           }}
         />
       )
     };
 
+  const fallbackPage = defaultPageForUser(user);
+  const activePage = pages[page] ? page : fallbackPage;
+
   return (
-    <Layout page={page} setPage={setPage} user={user}>
-      {pages[page] || pages.quotes}
+    <Layout page={activePage} setPage={setPage} user={user}>
+      {pages[activePage] || pages.password}
     </Layout>
   );
 }

@@ -23,6 +23,51 @@ function positiveNumber(value, fallback = 0) {
   return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
+function digits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function validCpf(value) {
+  const cpf = digits(value);
+  if (cpf.length !== 11 || /^(\d)\1+$/.test(cpf)) return false;
+  const calc = (length) => {
+    let sum = 0;
+    for (let index = 0; index < length; index += 1) {
+      sum += Number(cpf[index]) * (length + 1 - index);
+    }
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  return calc(9) === Number(cpf[9]) && calc(10) === Number(cpf[10]);
+}
+
+function validCnpj(value) {
+  const cnpj = digits(value);
+  if (cnpj.length !== 14 || /^(\d)\1+$/.test(cnpj)) return false;
+  const calc = (baseLength) => {
+    const weights = baseLength === 12
+      ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+      : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const sum = weights.reduce((total, weight, index) => total + Number(cnpj[index]) * weight, 0);
+    const remainder = sum % 11;
+    return remainder < 2 ? 0 : 11 - remainder;
+  };
+  return calc(12) === Number(cnpj[12]) && calc(13) === Number(cnpj[13]);
+}
+
+function validDocument(value) {
+  const document = digits(value);
+  return document.length === 11 ? validCpf(document) : validCnpj(document);
+}
+
+function requiredText(value, label) {
+  if (!String(value || '').trim()) throw new Error(`Informe ${label}.`);
+}
+
+function validateUf(value) {
+  return /^[A-Z]{2}$/.test(String(value || '').trim().toUpperCase());
+}
+
 function calcCubagem(item) {
   return (
     positiveNumber(item.comprimento) *
@@ -352,21 +397,43 @@ async function prepareQuoteContext(user, body) {
   const pesoTotal = calculatedWeight || positiveNumber(body.pesoTotal);
   const tipoFrete = normalizeFreightType(body.tipoFrete);
 
-  if (!String(body.cnpjDestinatario || '').trim()) {
-    throw new Error('Informe o documento do destinatário.');
+  const documentoRemetente = digits(company.cnpj);
+  const documentoDestinatario = digits(body.cnpjDestinatario);
+  const cepOrigem = digits(company.cep);
+  const cepDestino = digits(body.cepDestino);
+
+  if (!validCnpj(documentoRemetente)) {
+    throw new Error('O CNPJ da empresa remetente está incompleto ou inválido. Corrija o cadastro da empresa.');
   }
-  if (!String(body.cepDestino || '').trim()) {
-    throw new Error('Informe o CEP de destino.');
+  if (cepOrigem.length !== 8) {
+    throw new Error('O CEP da empresa remetente está incompleto. Corrija o cadastro da empresa.');
   }
+  if (!validDocument(documentoDestinatario)) {
+    throw new Error('Informe um CPF ou CNPJ válido para o destinatário.');
+  }
+  requiredText(body.razaoSocialDestinatario, 'a razão social ou o nome do destinatário');
+  if (cepDestino.length !== 8) throw new Error('Informe um CEP de destino com 8 dígitos.');
+  requiredText(body.enderecoDestino, 'o endereço do destinatário');
+  requiredText(body.cidadeDestino, 'a cidade do destinatário');
+  if (!validateUf(body.ufDestino)) throw new Error('Informe uma UF válida para o destinatário.');
+  requiredText(body.modal || 'Rodoviário', 'o modal da cotação');
+
   if (positiveNumber(body.valorMercadoria) <= 0) {
     throw new Error('Informe um valor de mercadoria maior que zero.');
   }
   if (pesoTotal <= 0) {
     throw new Error('Informe o peso dos produtos/volumes.');
   }
+  if (quantidadeVolumes <= 0) {
+    throw new Error('Informe ao menos um volume na cotação.');
+  }
 
-  const documentoRemetente = String(company.cnpj || '').replace(/\D/g, '');
-  const documentoDestinatario = String(body.cnpjDestinatario || '').replace(/\D/g, '');
+  if (tipoFrete === 'TERCEIROS') {
+    if (!validDocument(body.cnpjTerceiro || body.documentoPagador)) {
+      throw new Error('Informe um CPF ou CNPJ válido para o terceiro pagador.');
+    }
+    requiredText(body.razaoSocialTerceiro, 'a razão social ou o nome do terceiro pagador');
+  }
   const documentoPagador =
     tipoFrete === 'FOB'
       ? documentoDestinatario
@@ -379,7 +446,7 @@ async function prepareQuoteContext(user, body) {
     userId: user.id,
     cnpjDestinatario: documentoDestinatario,
     razaoSocialDestinatario: body.razaoSocialDestinatario || null,
-    cepDestino: String(body.cepDestino).replace(/\D/g, ''),
+    cepDestino,
     enderecoDestino: body.enderecoDestino || null,
     cidadeDestino: body.cidadeDestino || null,
     ufDestino: body.ufDestino || null,
@@ -413,7 +480,7 @@ async function prepareQuoteContext(user, body) {
     documentoPagador,
     documentoRemetente,
     documentoDestinatario,
-    cepOrigem: String(company.cep || '').replace(/\D/g, ''),
+    cepOrigem,
     pesoTotal,
     quantidadeVolumes,
     items,

@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 const {
   startTrackingWorker,
@@ -11,7 +12,16 @@ const {
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '12mb' }));
+
+const companyLogoDirectory = path.resolve(
+  process.env.COMPANY_LOGO_DIR || path.join(__dirname, '../storage/company-logos')
+);
+app.use('/company-logos', express.static(companyLogoDirectory, {
+  fallthrough: true,
+  maxAge: '1d',
+  immutable: false
+}));
 
 app.use('/auth', require('./routes/auth.routes'));
 app.use('/users', require('./routes/user.routes'));
@@ -21,6 +31,7 @@ app.use('/carriers', require('./routes/carrier.routes'));
 app.use('/carrier-credentials', require('./routes/credential.routes'));
 app.use('/quotes', require('./routes/quote.routes'));
 app.use('/tracking', require('./routes/tracking.routes'));
+app.use('/notifications', require('./routes/notification.routes'));
 
 app.get('/health', (_, res) => {
   res.json({ ok: true, app: 'FreteHub' });

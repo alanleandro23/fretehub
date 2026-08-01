@@ -41,3 +41,8 @@ desktop.ini
 .cache/
 .temp/
 tmp/
+# Comprovantes locais enviados pelos usuarios
+backend/storage/delivery-proofs/
+
+# Logomarcas locais das empresas
+backend/storage/company-logos/

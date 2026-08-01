@@ -153,3 +153,13 @@ Senha: admin123
 ```
 
 Altere a senha no primeiro acesso.
+
+## V19 — Histórico responsivo e empresas inteligentes
+
+- Histórico de cotações em lista responsiva, sem barra horizontal da página.
+- Menu de ações por cotação com visualização, Excel, PDF, envio e exclusão conforme permissão.
+- Filtros avançados do tracking recolhíveis.
+- Cadastro de empresa com consulta de CNPJ via backend e complemento de endereço por CEP.
+- Logomarca da empresa por URL ou arquivo PNG/JPEG.
+- Destinatários frequentes reaproveitados a partir das cotações salvas.
+- Arquivos de logo armazenados fora do Git em `backend/storage/company-logos`.

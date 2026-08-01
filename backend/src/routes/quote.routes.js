@@ -1,9 +1,11 @@
 const router = require('express').Router();
 const prisma = require('../db');
 const auth = require('../middleware/auth');
-const { adminOnly } = require('../middleware/auth');
+const { requirePermission, hasPermission, PERMISSIONS } = require('../middleware/auth');
 const { generateQuotePreview, saveQuotePreview } = require('../services/quote.service');
 const { buildQuoteWorkbook } = require('../utils/excel');
+const { buildQuotePdf } = require('../utils/pdf');
+const { sendQuoteProposal } = require('../services/quote-proposal.service');
 
 router.use(auth);
 
@@ -16,17 +18,24 @@ const quoteInclude = {
   company: true,
   user: { select: { id: true, name: true, email: true } },
   items: { include: { product: true } },
-  results: { include: { carrier: true } }
+  results: { include: { carrier: true } },
+  proposalLogs: {
+    include: { user: { select: { id: true, name: true, email: true } } },
+    orderBy: { createdAt: 'desc' },
+    take: 50
+  }
 };
 
 async function findAccessibleQuote(id, user) {
-  return prisma.quote.findFirst({
+  const quote = await prisma.quote.findFirst({
     where: { id: Number(id), ...accessWhere(user) },
     include: quoteInclude
   });
+  if (quote && !hasPermission(user, PERMISSIONS.QUOTE_SEND)) quote.proposalLogs = [];
+  return quote;
 }
 
-router.post('/preview', async (req, res) => {
+router.post('/preview', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
   try {
     const preview = await generateQuotePreview(req.user, req.body);
     res.status(200).json(preview);
@@ -35,7 +44,7 @@ router.post('/preview', async (req, res) => {
   }
 });
 
-router.post('/save', async (req, res) => {
+router.post('/save', requirePermission(PERMISSIONS.QUOTE_SAVE), async (req, res) => {
   try {
     const quote = await saveQuotePreview(req.user, req.body.draftToken);
     res.status(201).json(quote);
@@ -45,7 +54,7 @@ router.post('/save', async (req, res) => {
 });
 
 // Compatibilidade temporária com clientes antigos: gerar uma prévia sem salvar no histórico.
-router.post('/', async (req, res) => {
+router.post('/', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
   try {
     const preview = await generateQuotePreview(req.user, req.body);
     res.status(200).json(preview);
@@ -54,7 +63,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.get('/', async (req, res) => {
+router.get('/', requirePermission(PERMISSIONS.QUOTE_VIEW), async (req, res) => {
   try {
     const quotes = await prisma.quote.findMany({
       where: {
@@ -75,7 +84,45 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/:id/export-excel', async (req, res) => {
+
+router.get('/recipients/frequent', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
+  try {
+    const quotes = await prisma.quote.findMany({
+      where: { status: { not: 'INACTIVE' } },
+      select: {
+        cnpjDestinatario: true,
+        razaoSocialDestinatario: true,
+        cepDestino: true,
+        enderecoDestino: true,
+        cidadeDestino: true,
+        ufDestino: true,
+        createdAt: true
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 500
+    });
+
+    const unique = new Map();
+    for (const quote of quotes) {
+      const key = String(quote.cnpjDestinatario || '').replace(/\D/g, '');
+      if (!key || unique.has(key)) continue;
+      unique.set(key, {
+        cnpj: key,
+        razaoSocial: quote.razaoSocialDestinatario || '',
+        cep: String(quote.cepDestino || '').replace(/\D/g, ''),
+        endereco: quote.enderecoDestino || '',
+        cidade: quote.cidadeDestino || '',
+        uf: quote.ufDestino || '',
+        lastUsedAt: quote.createdAt
+      });
+    }
+    res.json(Array.from(unique.values()).slice(0, 100));
+  } catch (error) {
+    res.status(500).json({ message: 'Erro ao consultar destinatários frequentes.', error: error.message });
+  }
+});
+
+router.get('/:id/export-excel', requirePermission(PERMISSIONS.QUOTE_EXPORT), async (req, res) => {
   try {
     const quote = await findAccessibleQuote(req.params.id, req.user);
     if (!quote) return res.status(404).json({ message: 'Cotação não encontrada.' });
@@ -90,7 +137,41 @@ router.get('/:id/export-excel', async (req, res) => {
   }
 });
 
-router.get('/:id', async (req, res) => {
+router.get('/:id/export-pdf', requirePermission(PERMISSIONS.QUOTE_EXPORT), async (req, res) => {
+  try {
+    const quote = await findAccessibleQuote(req.params.id, req.user);
+    if (!quote) return res.status(404).json({ message: 'Cotação não encontrada.' });
+
+    const pdf = await buildQuotePdf(quote);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=cotacao-${quote.id}.pdf`);
+    res.end(pdf);
+  } catch (error) {
+    res.status(400).json({ message: 'Erro ao gerar o PDF da cotação.', error: error.message });
+  }
+});
+
+router.post('/:id/send-proposal', requirePermission(PERMISSIONS.QUOTE_SEND), async (req, res) => {
+  try {
+    const quote = await findAccessibleQuote(req.params.id, req.user);
+    if (!quote) return res.status(404).json({ message: 'Cotação não encontrada.' });
+
+    const proposal = await sendQuoteProposal({
+      quote,
+      user: req.user,
+      to: req.body.to,
+      cc: req.body.cc,
+      subject: req.body.subject,
+      message: req.body.message,
+      formats: req.body.formats
+    });
+    res.status(201).json({ success: true, message: 'Proposta enviada por e-mail.', proposal });
+  } catch (error) {
+    res.status(400).json({ message: 'Não foi possível enviar a proposta.', error: error.message });
+  }
+});
+
+router.get('/:id', requirePermission(PERMISSIONS.QUOTE_VIEW), async (req, res) => {
   try {
     const quote = await findAccessibleQuote(req.params.id, req.user);
     if (!quote) return res.status(404).json({ message: 'Cotação não encontrada.' });
@@ -100,7 +181,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.delete('/:id', adminOnly, async (req, res) => {
+router.delete('/:id', requirePermission(PERMISSIONS.QUOTE_DELETE), async (req, res) => {
   try {
     const quote = await prisma.quote.update({
       where: { id: Number(req.params.id) },

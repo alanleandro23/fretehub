@@ -2,7 +2,7 @@ const router = require('express').Router();
 const bcrypt = require('bcryptjs');
 const prisma = require('../db');
 const auth = require('../middleware/auth');
-const { adminOnly } = require('../middleware/auth');
+const { adminOnly, normalizeRole } = require('../middleware/auth');
 
 router.use(auth, adminOnly);
 
@@ -26,8 +26,8 @@ const selectUser = {
   }
 };
 
-function normalizeRole(value) {
-  return value === 'ADMIN' ? 'ADMIN' : 'USER';
+function normalizeRequestedRole(value) {
+  return normalizeRole(value);
 }
 
 function normalizeCompanyId(value) {
@@ -75,7 +75,7 @@ router.post('/', async (req, res) => {
         email,
         name,
         passwordHash: await bcrypt.hash(initialPassword, 12),
-        role: normalizeRole(req.body.role),
+        role: normalizeRequestedRole(req.body.role),
         companyId: normalizeCompanyId(req.body.companyId),
         active: req.body.active !== false,
         mustChangePassword: true
@@ -96,7 +96,7 @@ router.put('/:id', async (req, res) => {
 
     if (req.body.email !== undefined) data.email = String(req.body.email).trim().toLowerCase();
     if (req.body.name !== undefined) data.name = String(req.body.name).trim();
-    if (req.body.role !== undefined) data.role = normalizeRole(req.body.role);
+    if (req.body.role !== undefined) data.role = normalizeRequestedRole(req.body.role);
     if (req.body.companyId !== undefined) data.companyId = normalizeCompanyId(req.body.companyId);
     if (req.body.active !== undefined) data.active = Boolean(req.body.active);
 
@@ -104,7 +104,7 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ message: 'Você não pode desativar o próprio usuário.' });
     }
 
-    if (id === req.user.id && data.role === 'USER') {
+    if (id === req.user.id && data.role && data.role !== 'ADMIN') {
       return res.status(400).json({ message: 'Você não pode remover o próprio perfil ADMIN.' });
     }
 

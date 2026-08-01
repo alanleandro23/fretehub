@@ -3,13 +3,15 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const prisma = require('../db');
 const auth = require('../middleware/auth');
+const { permissionsForRole, normalizeRole } = require('../middleware/auth');
 
 function publicUser(user) {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
-    role: user.role,
+    role: normalizeRole(user.role),
+    permissions: permissionsForRole(user.role),
     companyId: user.companyId,
     active: user.active,
     mustChangePassword: user.mustChangePassword,
