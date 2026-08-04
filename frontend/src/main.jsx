@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import axios from 'axios';
 import {
   Truck,
@@ -214,11 +215,14 @@ function Login({ onLogin }) {
   );
 }
 
-function NotificationCenter({ setPage }) {
+function NotificationCenter({ setPage, user }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [panelStyle, setPanelStyle] = useState({});
+  const centerRef = useRef(null);
+  const bellRef = useRef(null);
   const panelRef = useRef(null);
   const browserNotifiedRef = useRef(new Set());
 
@@ -258,11 +262,38 @@ function NotificationCenter({ setPage }) {
 
   useEffect(() => {
     function closeOnOutsideClick(event) {
-      if (panelRef.current && !panelRef.current.contains(event.target)) setOpen(false);
+      const clickedBell = centerRef.current?.contains(event.target);
+      const clickedPanel = panelRef.current?.contains(event.target);
+      if (!clickedBell && !clickedPanel) setOpen(false);
     }
     document.addEventListener('mousedown', closeOnOutsideClick);
     return () => document.removeEventListener('mousedown', closeOnOutsideClick);
   }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function positionPanel() {
+      const bell = bellRef.current;
+      if (!bell) return;
+      const rect = bell.getBoundingClientRect();
+      const panelWidth = Math.min(400, Math.max(280, window.innerWidth - 32));
+      let left = rect.right + 12;
+      if (left + panelWidth > window.innerWidth - 16) {
+        left = Math.max(16, window.innerWidth - panelWidth - 16);
+      }
+      const top = Math.max(16, Math.min(rect.top, window.innerHeight - 120));
+      setPanelStyle({ top: `${top}px`, left: `${left}px`, width: `${panelWidth}px` });
+    }
+
+    positionPanel();
+    window.addEventListener('resize', positionPanel);
+    document.addEventListener('scroll', positionPanel, true);
+    return () => {
+      window.removeEventListener('resize', positionPanel);
+      document.removeEventListener('scroll', positionPanel, true);
+    };
+  }, [open]);
 
   async function markRead(item) {
     if (!item.readAt) {
@@ -276,7 +307,7 @@ function NotificationCenter({ setPage }) {
 
   async function openNotification(item) {
     await markRead(item);
-    if (item.trackingId) {
+    if (item.trackingId && can(user, 'TRACKING_VIEW')) {
       sessionStorage.setItem('fretehubTrackingFocusId', String(item.trackingId));
       window.dispatchEvent(new CustomEvent('fretehub:open-tracking', {
         detail: { trackingId: Number(item.trackingId) }
@@ -308,10 +339,11 @@ function NotificationCenter({ setPage }) {
   }
 
   return (
-    <div className="notificationCenter" ref={panelRef}>
+    <div className="notificationCenter" ref={centerRef}>
       <button
         type="button"
         className="notificationBell"
+        ref={bellRef}
         onClick={() => {
           setOpen((current) => !current);
           if (!open) loadNotifications();
@@ -322,8 +354,8 @@ function NotificationCenter({ setPage }) {
         {unreadCount > 0 && <span className="notificationCount">{unreadCount > 99 ? '99+' : unreadCount}</span>}
       </button>
 
-      {open && (
-        <div className="notificationPanel">
+      {open && createPortal(
+        <div className="notificationPanel notificationPanelPortal" ref={panelRef} style={panelStyle}>
           <div className="notificationPanelHeader">
             <div>
               <strong>Notificações</strong>
@@ -372,7 +404,8 @@ function NotificationCenter({ setPage }) {
               </div>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -413,7 +446,7 @@ function Layout({ children, setPage, page, user }) {
         <div className="userSummary">
           <div className="userSummaryTop">
             <strong>{user?.name || user?.email}</strong>
-            {can(user, 'TRACKING_VIEW') && <NotificationCenter setPage={setPage} />}
+            <NotificationCenter setPage={setPage} user={user} />
           </div>
           <small>{user?.email}</small>
           <span className="badge badge-alert">{roleLabel(user?.role)}</span>
@@ -1195,6 +1228,8 @@ function Credentials() {
     codigoCliente: '',
     contrato: '',
     cnpjVinculado: '',
+    correiosDr: '',
+    correiosProdutos: '',
     ativo: true
   };
 
@@ -1203,15 +1238,21 @@ function Credentials() {
   const [carriers, setCarriers] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  const [testStatus, setTestStatus] = useState({});
+
+  function normalizedCarrierName(carrier) {
+    return String(carrier?.nome || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+  }
 
   const selectedCarrier = carriers.find(
     (carrier) => Number(carrier.id) === Number(form.carrierId)
   );
-  const isCamiloCredential = String(selectedCarrier?.nome || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .includes('camilo');
+  const selectedCarrierName = normalizedCarrierName(selectedCarrier);
+  const isCamiloCredential = selectedCarrierName.includes('camilo');
+  const isCorreiosCredential = selectedCarrierName.includes('correios');
 
   async function load() {
     const [credentialsResponse, companiesResponse, carriersResponse] = await Promise.all([
@@ -1243,6 +1284,8 @@ function Credentials() {
       codigoCliente: row.codigoCliente || '',
       contrato: row.contrato || '',
       cnpjVinculado: row.cnpjVinculado || '',
+      correiosDr: row.configuracao?.correiosDr || '',
+      correiosProdutos: row.configuracao?.correiosProdutos || '',
       ativo: row.ativo
     });
   }
@@ -1250,12 +1293,37 @@ function Credentials() {
   async function save(e) {
     e.preventDefault();
     try {
-      if (editingId) await api.put(`/carrier-credentials/${editingId}`, form);
-      else await api.post('/carrier-credentials', form);
+      const payload = { ...form };
+      if (!isCorreiosCredential) {
+        delete payload.correiosDr;
+        delete payload.correiosProdutos;
+      }
+
+      if (editingId) await api.put(`/carrier-credentials/${editingId}`, payload);
+      else await api.post('/carrier-credentials', payload);
       clearForm();
-      load();
+      await load();
     } catch (error) {
-      alert(error.response?.data?.message || 'Erro ao salvar credencial.');
+      alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao salvar credencial.');
+    }
+  }
+
+  async function testCredential(row) {
+    setTestStatus((current) => ({ ...current, [row.id]: 'Testando autenticação...' }));
+    try {
+      const response = await api.post(`/carrier-credentials/${row.id}/test`);
+      const expiresAt = response.data?.details?.expiresAt
+        ? ` Token válido até ${new Date(response.data.details.expiresAt).toLocaleString('pt-BR')}.`
+        : '';
+      setTestStatus((current) => ({
+        ...current,
+        [row.id]: `${response.data?.message || 'Autenticação concluída.'}${expiresAt}`
+      }));
+    } catch (error) {
+      setTestStatus((current) => ({
+        ...current,
+        [row.id]: error.response?.data?.error || error.response?.data?.message || 'Falha no teste.'
+      }));
     }
   }
 
@@ -1267,7 +1335,7 @@ function Credentials() {
 
   return (
     <>
-      <div className="pageHeader"><div><h1>Credenciais</h1><p>Os valores de senha e token nunca aparecem na listagem.</p></div></div>
+      <div className="pageHeader"><div><h1>Credenciais</h1><p>Os valores de senha, código de acesso e token nunca aparecem na listagem.</p></div></div>
 
       <form className="card formGrid" onSubmit={save}>
         <label className="fieldLabel">Transportadora
@@ -1291,16 +1359,48 @@ function Credentials() {
           </select>
         </label>
 
-        <label className="fieldLabel">{isCamiloCredential ? 'Usuário SSW' : 'Usuário'}<input value={form.usuario} onChange={(e) => setForm({ ...form, usuario: e.target.value })} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Senha do usuário SSW' : 'Senha'}<input type="password" value={form.senha} onChange={(e) => setForm({ ...form, senha: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Senha do pagador' : 'Token'}<input type="password" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Domínio SSW' : 'Código do cliente'}<input value={form.codigoCliente} onChange={(e) => setForm({ ...form, codigoCliente: e.target.value })} maxLength={isCamiloCredential ? 3 : undefined} /></label>
-        <label className="fieldLabel">{isCamiloCredential ? 'Código da mercadoria (opcional)' : 'Contrato'}<input value={form.contrato} onChange={(e) => setForm({ ...form, contrato: e.target.value })} placeholder={isCamiloCredential ? 'Padrão: 1' : ''} /></label>
-        <label className="fieldLabel">CNPJ vinculado<input value={form.cnpjVinculado} onChange={(e) => setForm({ ...form, cnpjVinculado: e.target.value.replace(/\D/g, '') })} maxLength="14" /></label>
+        <label className="fieldLabel">
+          {isCamiloCredential ? 'Usuário SSW' : isCorreiosCredential ? 'Usuário idCorreios' : 'Usuário'}
+          <input value={form.usuario} onChange={(e) => setForm({ ...form, usuario: e.target.value })} />
+        </label>
+        <label className="fieldLabel">
+          {isCamiloCredential ? 'Senha do usuário SSW' : isCorreiosCredential ? 'Código de acesso à API' : 'Senha'}
+          <input type="password" value={form.senha} onChange={(e) => setForm({ ...form, senha: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} />
+        </label>
+        <label className="fieldLabel">
+          {isCamiloCredential ? 'Senha do pagador' : isCorreiosCredential ? 'Token manual (opcional)' : 'Token'}
+          <input type="password" value={form.token} onChange={(e) => setForm({ ...form, token: e.target.value })} placeholder={editingId ? 'Preencha somente para substituir' : ''} />
+        </label>
+        <label className="fieldLabel">
+          {isCamiloCredential ? 'Domínio SSW' : isCorreiosCredential ? 'Cartão de postagem' : 'Código do cliente'}
+          <input value={form.codigoCliente} onChange={(e) => setForm({ ...form, codigoCliente: isCorreiosCredential ? e.target.value.replace(/\D/g, '') : e.target.value })} maxLength={isCamiloCredential ? 3 : undefined} />
+        </label>
+        <label className="fieldLabel">
+          {isCamiloCredential ? 'Código da mercadoria (opcional)' : isCorreiosCredential ? 'Contrato (necessário para Busca CEP)' : 'Contrato'}
+          <input value={form.contrato} onChange={(e) => setForm({ ...form, contrato: isCorreiosCredential ? e.target.value.replace(/\D/g, '') : e.target.value })} placeholder={isCamiloCredential ? 'Padrão: 1' : ''} />
+        </label>
+
+        {isCorreiosCredential ? (
+          <>
+            <label className="fieldLabel">DR / Superintendência
+              <input value={form.correiosDr} onChange={(e) => setForm({ ...form, correiosDr: e.target.value.replace(/\D/g, '') })} maxLength="3" placeholder="Ex.: 72" />
+            </label>
+            <label className="fieldLabel fieldSpan2">Produtos contratados
+              <input value={form.correiosProdutos} onChange={(e) => setForm({ ...form, correiosProdutos: e.target.value })} placeholder="Ex.: 04162:SEDEX; 04669:PAC" />
+            </label>
+          </>
+        ) : (
+          <label className="fieldLabel">CNPJ vinculado<input value={form.cnpjVinculado} onChange={(e) => setForm({ ...form, cnpjVinculado: e.target.value.replace(/\D/g, '') })} maxLength="14" /></label>
+        )}
 
         {isCamiloCredential && (
           <div className="infoBox fieldSpan">
             A Camilo usa o SSW: Domínio SSW, usuário, senha do usuário e senha do pagador. O CNPJ do pagador é definido pelo tipo de frete da cotação.
+          </div>
+        )}
+        {isCorreiosCredential && (
+          <div className="infoBox fieldSpan">
+            Use o código de acesso gerado no CWS, não a senha pessoal do portal. O contrato é usado na Busca CEP; o cartão de postagem é usado na cotação. Informe os códigos de produto habilitados no contrato, e cada código será exibido como uma modalidade separada.
           </div>
         )}
         <label className="fieldLabel">Status
@@ -1312,15 +1412,27 @@ function Credentials() {
 
       <div className="card tableCard"><div className="tableScroll"><table>
         <thead><tr><th>Transportadora</th><th>Empresa</th><th>Ambiente</th><th>Identificação</th><th>Segredos</th><th>Status</th><th>Ações</th></tr></thead>
-        <tbody>{rows.map((row) => <tr key={row.id}>
-          <td>{row.carrier?.nome}</td>
-          <td>{row.company?.nomeFantasia || row.company?.razaoSocial}</td>
-          <td>{row.ambiente === 'PRODUCAO' ? 'Produção' : 'Homologação'}</td>
-          <td>{row.usuario || '-'}<br /><small>Cliente: {row.codigoCliente || '-'} · Contrato: {row.contrato || '-'}</small></td>
-          <td><span className="secretState">Senha: {row.hasPassword ? 'configurada' : 'não informada'}</span><br /><span className="secretState">Token: {row.hasToken ? 'configurado' : 'não informado'}</span></td>
-          <td><span className={`badge ${row.ativo ? 'badge-success' : 'badge-error'}`}>{row.ativo ? 'Ativa' : 'Inativa'}</span></td>
-          <td className="actionsCell"><button type="button" onClick={() => edit(row)}>Editar</button><button type="button" className="btn-danger" onClick={() => deactivate(row.id)}>Desativar</button></td>
-        </tr>)}</tbody>
+        <tbody>{rows.map((row) => {
+          const isCorreiosRow = normalizedCarrierName(row.carrier).includes('correios');
+          return <tr key={row.id}>
+            <td>{row.carrier?.nome}</td>
+            <td>{row.company?.nomeFantasia || row.company?.razaoSocial}</td>
+            <td>{row.ambiente === 'PRODUCAO' ? 'Produção' : 'Homologação'}</td>
+            <td>
+              {row.usuario || '-'}<br />
+              <small>{isCorreiosRow ? 'Cartão' : 'Cliente'}: {row.codigoCliente || '-'} · Contrato: {row.contrato || '-'}</small>
+              {isCorreiosRow && <><br /><small>DR: {row.configuracao?.correiosDr || '-'} · Produtos: {row.configuracao?.correiosProdutos || '-'}</small></>}
+            </td>
+            <td><span className="secretState">Senha/código: {row.hasPassword ? 'configurado' : 'não informado'}</span><br /><span className="secretState">Token: {row.hasToken ? 'configurado' : 'automático'}</span></td>
+            <td><span className={`badge ${row.ativo ? 'badge-success' : 'badge-error'}`}>{row.ativo ? 'Ativa' : 'Inativa'}</span></td>
+            <td className="actionsCell">
+              <button type="button" onClick={() => edit(row)}>Editar</button>
+              {isCorreiosRow && <button type="button" className="btn-secondary" onClick={() => testCredential(row)}>Testar autenticação</button>}
+              <button type="button" className="btn-danger" onClick={() => deactivate(row.id)}>Desativar</button>
+              {testStatus[row.id] && <small className="testMessage">{testStatus[row.id]}</small>}
+            </td>
+          </tr>;
+        })}</tbody>
       </table></div></div>
     </>
   );
@@ -1929,6 +2041,7 @@ function Quote({ user }) {
   const [formError, setFormError] = useState('');
   const [proposalQuote, setProposalQuote] = useState(null);
   const [frequentRecipients, setFrequentRecipients] = useState([]);
+  const [cepLookupLoading, setCepLookupLoading] = useState(false);
   const quoteRequestInProgress = useRef(false);
 
   const [form, setForm] = useState({
@@ -2042,6 +2155,31 @@ async function fetchCnpjData(cnpj) {
     }));
   } catch (error) {
     alert(error.response?.data?.error || error.response?.data?.message || 'Erro ao consultar CNPJ.');
+  }
+}
+
+async function fetchCorreiosCep(value = form.cepDestino) {
+  const cep = onlyNumbers(value);
+  if (cep.length !== 8) return alert('Informe um CEP com 8 dígitos.');
+  if (!form.companyId) return alert('Selecione a empresa remetente antes de consultar o CEP.');
+
+  setCepLookupLoading(true);
+  try {
+    const response = await api.get(`/correios/cep/${cep}`, {
+      params: { companyId: form.companyId }
+    });
+    const data = response.data || {};
+    setForm((current) => ({
+      ...current,
+      cepDestino: onlyNumbers(data.cep || cep),
+      enderecoDestino: data.endereco || current.enderecoDestino,
+      cidadeDestino: data.cidade || current.cidadeDestino,
+      ufDestino: data.uf || current.ufDestino
+    }));
+  } catch (error) {
+    alert(error.response?.data?.error || error.response?.data?.message || 'Não foi possível consultar o CEP nos Correios.');
+  } finally {
+    setCepLookupLoading(false);
   }
 }
 
@@ -2523,7 +2661,20 @@ const documentoPagador =
         </label>
 
         <label className="fieldLabel">CEP
-          <input value={form.cepDestino} onChange={(e) => upd('cepDestino', onlyNumbers(e.target.value))} maxLength="8" required />
+          <div className="inlineFieldAction">
+            <input
+              value={form.cepDestino}
+              onChange={(e) => upd('cepDestino', onlyNumbers(e.target.value))}
+              onBlur={() => {
+                if (onlyNumbers(form.cepDestino).length === 8 && !form.enderecoDestino) fetchCorreiosCep();
+              }}
+              maxLength="8"
+              required
+            />
+            <button type="button" className="btn-secondary" disabled={cepLookupLoading} onClick={() => fetchCorreiosCep()}>
+              {cepLookupLoading ? 'Consultando...' : 'Buscar CEP'}
+            </button>
+          </div>
         </label>
 
         <label className="fieldLabel fieldSpan2">Endereço
@@ -3889,93 +4040,84 @@ function TrackingPage({ user }) {
         )}
       </form>
 
-      <div className="card tableCard trackingTableCard">
-        <div className="tableScroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Empresa</th>
-                <th>Cadastrado por</th>
-                <th>Transportadora</th>
-                <th>NF / Pedido / CT-e</th>
-                <th>Destino</th>
-                <th>Previsão</th>
-                <th>Última ocorrência</th>
-                <th>Automação</th>
-                <th>Comprovantes</th>
-                <th>Timeline</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td><span className={`badge ${statusClass(row)}`}>{row.status || '-'}</span></td>
-                  <td>{row.company?.nomeFantasia || row.company?.razaoSocial || '-'}</td>
-                  <td><strong>{row.user?.name || '-'}</strong></td>
-                  <td>{row.transportadora}</td>
-                  <td>
-                    NF {row.notaFiscal || '-'}<br />
-                    <small>Pedido {row.pedido || '-'} · CT-e {row.conhecimento || '-'}</small>
-                  </td>
-                  <td>{row.cidade || '-'} / {row.uf || '-'}{row.destinatarioNome && <small className="trackingMeta compactMeta">Destinatário: {row.destinatarioNome}</small>}</td>
-                  <td>{row.previsaoEntrega || '-'}</td>
-                  <td>{row.ultimaOcorrencia || '-'}</td>
-                  <td>
-                    <strong>{row.dataEntrega ? 'Concluído' : row.monitoringActive ? 'Monitorando a cada 1h' : 'Pausado'}</strong>
-                    {row.lastCheckedAt && <small className="trackingMeta">Última: {new Date(row.lastCheckedAt).toLocaleString('pt-BR')}</small>}
-                    {row.monitoringActive && row.nextCheckAt && <small className="trackingMeta">Próxima: {new Date(row.nextCheckAt).toLocaleString('pt-BR')}</small>}
-                    {row.dataEntrega && row.emailNotificationSentAt && (
-                      <small className="trackingMeta">E-mail enviado: {new Date(row.emailNotificationSentAt).toLocaleString('pt-BR')}</small>
-                    )}
-                    {row.dataEntrega && !row.emailNotificationSentAt && row.emailNotificationError && (
-                      <small className="trackingError">E-mail pendente: {row.emailNotificationError}</small>
-                    )}
-                    {row.lastCheckError && <small className="trackingError">{row.lastCheckError}</small>}
-                  </td>
-                  <td>
-                    <button type="button" className="btn-secondary proofCountButton" onClick={() => openTimeline(row)}>
-                      <Paperclip size={15} /> {row.comprovantesTotal || 0}
-                    </button>
-                  </td>
-                  <td><button type="button" onClick={() => openTimeline(row)}>Ver timeline</button></td>
-                  <td>
-                    <div className="tableActions">
-                      {canCheckTracking && (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => forceMonitoring(row)}
-                          disabled={checkingId === row.id || Boolean(row.dataEntrega)}
-                          title={row.dataEntrega ? 'Carga já entregue' : 'Consultar a transportadora imediatamente'}
-                        >
-                          <RefreshCw size={15} />
-                          {checkingId === row.id ? 'Consultando...' : 'Monitorar agora'}
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <>
-                          <button type="button" className="btn-secondary" onClick={() => startEdit(row)}>
-                            <Pencil size={15} /> Editar
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-danger"
-                            onClick={() => removeTracking(row)}
-                            disabled={deletingId === row.id}
-                          >
-                            <Trash2 size={15} /> {deletingId === row.id ? 'Excluindo...' : 'Excluir'}
-                          </button>
-                        </>
-                      )}
+      <div className="card trackingTableCard trackingListCard">
+        <div className="trackingResponsiveList">
+          {rows.map((row) => (
+            <article className="trackingResponsiveItem" key={row.id}>
+              <div className="trackingResponsiveIdentity">
+                <div className="trackingItemTopline">
+                  <span className={`badge ${statusClass(row)}`}>{row.status || '-'}</span>
+                  <strong>{row.transportadora}</strong>
+                </div>
+                <strong>{row.company?.nomeFantasia || row.company?.razaoSocial || '-'}</strong>
+                <small>Cadastrado por: {row.user?.name || '-'}</small>
+              </div>
+
+              <div className="trackingResponsiveShipment">
+                <span className="trackingResponsiveLabel">Documentos e destino</span>
+                <strong>NF {row.notaFiscal || '-'}</strong>
+                <small>Pedido {row.pedido || '-'} · CT-e {row.conhecimento || '-'}</small>
+                <span>{row.cidade || '-'} / {row.uf || '-'}</span>
+                {row.destinatarioNome && <small>Destinatário: {row.destinatarioNome}</small>}
+              </div>
+
+              <div className="trackingResponsiveOperation">
+                <span className="trackingResponsiveLabel">Operação</span>
+                <div className="trackingOperationPair">
+                  <span><small>Previsão</small><strong>{row.previsaoEntrega || '-'}</strong></span>
+                  <span><small>Última ocorrência</small><strong>{row.ultimaOcorrencia || '-'}</strong></span>
+                </div>
+                <strong>{row.dataEntrega ? 'Concluído' : row.monitoringActive ? 'Monitorando a cada 1h' : 'Pausado'}</strong>
+                {row.lastCheckedAt && <small>Última: {new Date(row.lastCheckedAt).toLocaleString('pt-BR')}</small>}
+                {row.monitoringActive && row.nextCheckAt && <small>Próxima: {new Date(row.nextCheckAt).toLocaleString('pt-BR')}</small>}
+                {row.dataEntrega && row.emailNotificationSentAt && (
+                  <small>E-mail enviado: {new Date(row.emailNotificationSentAt).toLocaleString('pt-BR')}</small>
+                )}
+                {row.dataEntrega && !row.emailNotificationSentAt && row.emailNotificationError && (
+                  <small className="trackingError">E-mail pendente: {row.emailNotificationError}</small>
+                )}
+                {row.lastCheckError && <small className="trackingError">{row.lastCheckError}</small>}
+              </div>
+
+              <div className="trackingResponsiveActions">
+                <button type="button" className="btn-secondary proofCountButton" onClick={() => openTimeline(row)}>
+                  <Paperclip size={15} /> {row.comprovantesTotal || 0} comprovante{Number(row.comprovantesTotal || 0) === 1 ? '' : 's'}
+                </button>
+                <button type="button" onClick={() => openTimeline(row)}>Ver timeline</button>
+                {canCheckTracking && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => forceMonitoring(row)}
+                    disabled={checkingId === row.id || Boolean(row.dataEntrega)}
+                    title={row.dataEntrega ? 'Carga já entregue' : 'Consultar a transportadora imediatamente'}
+                  >
+                    <RefreshCw size={15} />
+                    {checkingId === row.id ? 'Consultando...' : 'Monitorar agora'}
+                  </button>
+                )}
+                {isAdmin && (
+                  <details className="trackingActionMenu">
+                    <summary>Ações <ChevronDown size={15} /></summary>
+                    <div className="trackingActionMenuPanel">
+                      <button type="button" className="btn-secondary" onClick={() => startEdit(row)}>
+                        <Pencil size={15} /> Editar
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-danger"
+                        onClick={() => removeTracking(row)}
+                        disabled={deletingId === row.id}
+                      >
+                        <Trash2 size={15} /> {deletingId === row.id ? 'Excluindo...' : 'Excluir'}
+                      </button>
                     </div>
-                  </td>
-                </tr>
-              ))}
-              {!rows.length && <tr><td colSpan={12}>Nenhum tracking encontrado.</td></tr>}
-            </tbody>
-          </table>
+                  </details>
+                )}
+              </div>
+            </article>
+          ))}
+          {!rows.length && <div className="trackingEmptyState">Nenhum tracking encontrado.</div>}
         </div>
         <div className="trackingPagination">
           <span>Página {pagination.page} de {pagination.totalPages} · {pagination.total} resultado{pagination.total === 1 ? '' : 's'}</span>

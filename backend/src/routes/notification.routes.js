@@ -1,6 +1,5 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth');
-const { requirePermission, PERMISSIONS } = require('../middleware/auth');
 const {
   listNotifications,
   unreadCount,
@@ -9,7 +8,7 @@ const {
   archiveNotification
 } = require('../services/notification.service');
 
-router.use(auth, requirePermission(PERMISSIONS.TRACKING_VIEW));
+router.use(auth);
 
 router.get('/', async (req, res) => {
   try {

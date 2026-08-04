@@ -25,28 +25,13 @@ function trackingReference(tracking) {
   return `Tracking #${tracking?.id || '-'}`;
 }
 
-async function recipientIdsForTracking(tracking, audience = 'operations') {
-  const where = {
-    active: true,
-    OR: []
-  };
-
-  if (tracking?.userId) where.OR.push({ id: tracking.userId });
-  where.OR.push({ role: 'ADMIN' });
-
-  if (audience !== 'admin') {
-    where.OR.push({
-      role: 'OPERATOR',
-      ...(tracking?.companyId ? { companyId: tracking.companyId } : {})
-    });
-  }
-
+async function recipientIdsForAllActiveUsers() {
   const users = await prisma.user.findMany({
-    where,
+    where: { active: true },
     select: { id: true }
   });
 
-  return [...new Set(users.map((user) => user.id))];
+  return users.map((user) => user.id);
 }
 
 async function createNotification({
@@ -61,7 +46,9 @@ async function createNotification({
 }) {
   if (!fingerprint) throw new Error('A notificação precisa de uma chave de deduplicação.');
 
-  const recipientIds = await recipientIdsForTracking(tracking, audience);
+  // Todas as notificações do sistema são distribuídas para todos os usuários ativos.
+  // O status de leitura continua individual em NotificationRecipient (notificationId + userId).
+  const recipientIds = await recipientIdsForAllActiveUsers();
   if (!recipientIds.length) return null;
 
   const notification = await prisma.notification.upsert({

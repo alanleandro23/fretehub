@@ -138,6 +138,7 @@ model CarrierCredential {
   codigoCliente      String?
   contrato           String?
   cnpjVinculado      String?
+  configuracao       Json?
   ambiente           Environment @default(HOMOLOGACAO)
   ativo              Boolean     @default(true)
   createdAt          DateTime    @default(now())

@@ -231,7 +231,8 @@ async function getCarrierCredential(companyId, carrier) {
       : null,
     codigoCliente: credential.codigoCliente,
     contrato: credential.contrato,
-    cnpjVinculado: credential.cnpjVinculado
+    cnpjVinculado: credential.cnpjVinculado,
+    configuracao: credential.configuracao || null
   };
 }
 
@@ -496,7 +497,7 @@ async function prepareQuoteContext(user, body) {
 }
 
 async function runCarrierQuotes(carrierContexts, integrationPayload) {
-  return Promise.all(
+  const groupedResults = await Promise.all(
     carrierContexts.map(async ({ carrier, credential, evaluation }) => {
       let result;
 
@@ -546,22 +547,29 @@ async function runCarrierQuotes(carrierContexts, integrationPayload) {
         }
       }
 
-      return {
+      const carrierResults = Array.isArray(result?.results) && result.results.length
+        ? result.results
+        : [result];
+
+      return carrierResults.map((carrierResult, index) => ({
+        id: carrierResult?.id || `${carrier.id}-${index + 1}`,
         carrierId: carrier.id,
         carrier: {
           id: carrier.id,
           nome: carrier.nome,
           logoUrl: carrier.logoUrl || null
         },
-        status: result.status === 'success' ? 'success' : 'error',
-        valorFrete: result.freightValue ?? null,
-        prazo: result.deadline ?? null,
-        modalidade: result.modality ?? null,
-        mensagem: result.message ?? null,
-        rawResponse: result.rawResponse ?? null
-      };
+        status: carrierResult?.status === 'success' ? 'success' : 'error',
+        valorFrete: carrierResult?.freightValue ?? null,
+        prazo: carrierResult?.deadline ?? null,
+        modalidade: carrierResult?.modality ?? null,
+        mensagem: carrierResult?.message ?? null,
+        rawResponse: carrierResult?.rawResponse ?? null
+      }));
     })
   );
+
+  return groupedResults.flat();
 }
 
 function publicPreview(draft, company, user) {

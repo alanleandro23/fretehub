@@ -107,12 +107,21 @@ const definitions = [
     matches: ['correios'],
     service: correios,
     enabledEnv: 'CORREIOS_API_ENABLED',
-    strictDisable: true,
     credentialReady(credential) {
-      return hasToken(credential) || (hasUser(credential) && hasPassword(credential));
+      return hasToken(credential) || Boolean(
+        hasUser(credential) &&
+        hasPassword(credential) &&
+        (String(credential?.codigoCliente || '').trim() || String(credential?.contrato || '').trim())
+      );
     },
     envCredentialReady() {
-      return Boolean(String(process.env.CORREIOS_TOKEN || '').trim()) || hasEnvUserPassword('CORREIOS');
+      return Boolean(String(process.env.CORREIOS_TOKEN || '').trim()) || Boolean(
+        hasEnvUserPassword('CORREIOS') &&
+        (
+          String(process.env.CORREIOS_CARD || process.env.CORREIOS_CARTAO_POSTAGEM || '').trim() ||
+          String(process.env.CORREIOS_CONTRACT || process.env.CORREIOS_CONTRATO || '').trim()
+        )
+      );
     },
     trackingReady() {
       return false;

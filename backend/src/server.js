@@ -29,6 +29,7 @@ app.use('/companies', require('./routes/company.routes'));
 app.use('/products', require('./routes/product.routes'));
 app.use('/carriers', require('./routes/carrier.routes'));
 app.use('/carrier-credentials', require('./routes/credential.routes'));
+app.use('/correios', require('./routes/correios.routes'));
 app.use('/quotes', require('./routes/quote.routes'));
 app.use('/tracking', require('./routes/tracking.routes'));
 app.use('/notifications', require('./routes/notification.routes'));

@@ -483,7 +483,7 @@ aside .notificationBell:hover{
   color:#64748b;
 }
 
-aside .notificationTextButton{
+.notificationTextButton{
   width:auto!important;
   margin:0!important;
   padding:7px 9px!important;
@@ -520,7 +520,7 @@ aside .notificationTextButton{
 .notificationItem.severity-warning.unread{box-shadow:inset 3px 0 0 #d97706}
 .notificationItem.severity-error.unread{box-shadow:inset 3px 0 0 #d92d20}
 
-aside .notificationItemMain{
+.notificationItemMain{
   width:calc(100% - 42px)!important;
   display:flex;
   align-items:flex-start;
@@ -533,7 +533,7 @@ aside .notificationItemMain{
   text-align:left;
 }
 
-aside .notificationItemMain:hover{
+.notificationItemMain:hover{
   background:#f8fbff!important;
 }
 
@@ -577,7 +577,7 @@ aside .notificationItemMain:hover{
   font-size:11px;
 }
 
-aside .notificationArchive{
+.notificationArchive{
   width:34px!important;
   min-width:34px;
   height:34px;
@@ -590,7 +590,7 @@ aside .notificationArchive{
   color:#64748b!important;
 }
 
-aside .notificationArchive:hover{
+.notificationArchive:hover{
   background:#edf1f5!important;
   color:#b42318!important;
 }
@@ -1043,4 +1043,207 @@ main{height:100dvh;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-beh
     grid-template-columns:1fr;
     flex-direction:column;
   }
+}
+
+
+/* V20 - central de notificacoes em portal, fora do recorte do menu lateral */
+.notificationPanelPortal{
+  position:fixed;
+  z-index:5000;
+  right:auto;
+  max-width:calc(100vw - 32px);
+  max-height:calc(100dvh - 32px);
+  isolation:isolate;
+}
+
+.notificationPanelPortal .notificationList{
+  min-height:0;
+  max-height:calc(100dvh - 122px);
+}
+
+.notificationPanelPortal .notificationTextButton,
+.notificationPanelPortal .notificationItemMain,
+.notificationPanelPortal .notificationArchive{
+  display:inline-flex;
+}
+
+/* V20 - tracking responsivo sem tabela larga nem rolagem horizontal */
+.trackingListCard{
+  padding:0;
+  overflow:visible;
+}
+
+.trackingResponsiveList{
+  display:flex;
+  min-width:0;
+  flex-direction:column;
+}
+
+.trackingResponsiveItem{
+  position:relative;
+  display:grid;
+  grid-template-columns:minmax(150px,.9fr) minmax(205px,1.2fr) minmax(240px,1.4fr) minmax(165px,.9fr);
+  gap:18px;
+  align-items:start;
+  min-width:0;
+  padding:18px;
+  border-bottom:1px solid #e6edf4;
+  background:#fff;
+}
+
+.trackingResponsiveItem:last-child{border-bottom:0}
+.trackingResponsiveItem:hover{background:#f8fbff}
+
+.trackingResponsiveIdentity,
+.trackingResponsiveShipment,
+.trackingResponsiveOperation,
+.trackingResponsiveActions{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  overflow-wrap:anywhere;
+}
+
+.trackingResponsiveIdentity small,
+.trackingResponsiveShipment small,
+.trackingResponsiveOperation small{
+  color:#64748b;
+  line-height:1.35;
+}
+
+.trackingItemTopline{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.trackingResponsiveLabel{
+  color:#64748b;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+
+.trackingOperationPair{
+  display:grid;
+  grid-template-columns:minmax(0,.7fr) minmax(0,1.3fr);
+  gap:10px;
+  padding:10px;
+  border:1px solid #e3ebf3;
+  border-radius:10px;
+  background:#f8fbff;
+}
+
+.trackingOperationPair>span{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+
+.trackingOperationPair small{font-size:11px}
+.trackingOperationPair strong{font-size:13px}
+
+.trackingResponsiveActions{
+  align-items:stretch;
+}
+
+.trackingResponsiveActions>button,
+.trackingResponsiveActions>.trackingActionMenu{
+  width:100%;
+  margin:0;
+}
+
+.trackingResponsiveActions>button{
+  justify-content:center;
+  white-space:normal;
+  text-align:center;
+}
+
+.trackingActionMenu{
+  position:relative;
+}
+
+.trackingActionMenu summary{
+  list-style:none;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  min-height:40px;
+  padding:9px 12px;
+  border-radius:10px;
+  background:#e8eef5;
+  color:#183b59;
+  cursor:pointer;
+  user-select:none;
+}
+
+.trackingActionMenu summary::-webkit-details-marker{display:none}
+.trackingActionMenu[open] summary{background:#d8e2ec}
+
+.trackingActionMenuPanel{
+  position:absolute;
+  z-index:80;
+  top:calc(100% + 6px);
+  right:0;
+  width:100%;
+  min-width:150px;
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  padding:7px;
+  border:1px solid #dbe5ef;
+  border-radius:11px;
+  background:#fff;
+  box-shadow:0 14px 36px rgba(9,47,82,.2);
+}
+
+.trackingActionMenuPanel button{
+  width:100%;
+  justify-content:center;
+  margin:0;
+}
+
+.trackingEmptyState{
+  padding:34px 20px;
+  color:#64748b;
+  text-align:center;
+}
+
+@media(max-width:1280px){
+  .trackingResponsiveItem{
+    grid-template-columns:minmax(170px,1fr) minmax(220px,1.25fr) minmax(260px,1.5fr);
+  }
+  .trackingResponsiveActions{
+    grid-column:1/-1;
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+  }
+  .trackingActionMenuPanel{top:auto;right:0;bottom:calc(100% + 6px)}
+}
+
+@media(max-width:900px){
+  .notificationPanelPortal{
+    top:16px!important;
+    left:16px!important;
+    width:calc(100vw - 32px)!important;
+  }
+  .trackingResponsiveItem{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .trackingResponsiveOperation,
+  .trackingResponsiveActions{grid-column:1/-1}
+}
+
+@media(max-width:620px){
+  .trackingResponsiveItem{grid-template-columns:1fr;padding:14px}
+  .trackingResponsiveOperation,
+  .trackingResponsiveActions{grid-column:auto}
+  .trackingResponsiveActions{display:grid;grid-template-columns:1fr 1fr}
+  .trackingResponsiveActions>button:first-child{grid-column:1/-1}
+  .trackingOperationPair{grid-template-columns:1fr}
 }
