@@ -720,6 +720,244 @@ async function quoteFreight(payload) {
   }
 }
 
+function normalizeTrackingCode(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function isValidTrackingCode(value) {
+  return /^[A-Z]{2}\d{9}[A-Z]{2}$/.test(normalizeTrackingCode(value));
+}
+
+function trackingText(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (!['string', 'number', 'boolean'].includes(typeof value)) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return null;
+}
+
+function trackingLocation(unit) {
+  if (!unit || typeof unit !== 'object') return { cidade: null, uf: null };
+
+  const address = unit.endereco && typeof unit.endereco === 'object'
+    ? unit.endereco
+    : unit;
+
+  return {
+    cidade: trackingText(
+      address.cidade,
+      address.localidade,
+      address.municipio,
+      unit.cidade,
+      unit.localidade,
+      unit.municipio
+    ),
+    uf: trackingText(
+      address.uf,
+      address.estado,
+      address.siglaEstado,
+      unit.uf,
+      unit.estado
+    )?.toUpperCase() || null
+  };
+}
+
+function trackingEventDescription(event = {}) {
+  const description = trackingText(
+    event.descricao,
+    event.status,
+    [event.codigo, event.tipo].filter(Boolean).join('/')
+  ) || 'Ocorrência postal';
+  const detail = trackingText(event.detalhe, event.mensagem, event.observacao);
+
+  if (!detail) return description;
+
+  const normalizedDescription = description.toUpperCase().replace(/\s+/g, ' ');
+  const normalizedDetail = detail.toUpperCase().replace(/\s+/g, ' ');
+  return normalizedDescription.includes(normalizedDetail)
+    ? description
+    : `${description} — ${detail}`;
+}
+
+function trackingEventDate(event = {}) {
+  return trackingText(
+    event.dtHrCriado,
+    event.dataHora,
+    event.dataEvento,
+    event.dtEvento,
+    event.criadoEm
+  );
+}
+
+function trackingTimestamp(value) {
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function normalizeTrackingResponse(data, requestedCode) {
+  const normalizedCode = normalizeTrackingCode(requestedCode);
+  const objectRows = Array.isArray(data?.objetos)
+    ? data.objetos
+    : data?.objetos && typeof data.objetos === 'object'
+      ? [data.objetos]
+      : Array.isArray(data)
+        ? data
+        : data?.codObjeto
+          ? [data]
+          : [];
+
+  const object = objectRows.find(
+    (row) => normalizeTrackingCode(row?.codObjeto || row?.codigoObjeto) === normalizedCode
+  ) || objectRows[0];
+
+  if (!object) {
+    throw new Error(
+      trackingText(data?.mensagem, data?.message, data?.msgs?.[0]?.msg) ||
+      'Os Correios não retornaram dados para este código de rastreamento.'
+    );
+  }
+
+  const rawEvents = Array.isArray(object.eventos) ? object.eventos : [];
+  if (!rawEvents.length && trackingText(object.mensagem, object.message, object.erro)) {
+    throw new Error(trackingText(object.mensagem, object.message, object.erro));
+  }
+
+  const eventos = rawEvents
+    .map((event, index) => {
+      const origin = trackingLocation(event.unidade);
+      const destination = trackingLocation(event.unidadeDestino);
+      const date = trackingEventDate(event);
+      const description = trackingEventDescription(event);
+      const sourceKey = [
+        'CORREIOS',
+        trackingText(event.codigo) || '',
+        trackingText(event.tipo) || '',
+        date || '',
+        origin.cidade || '',
+        origin.uf || '',
+        description
+      ].join(':');
+
+      return {
+        tipo: trackingText(event.codigo, event.tipo, 'CORREIOS'),
+        descricao: description,
+        dataEvento: date,
+        cidade: origin.cidade || destination.cidade,
+        uf: origin.uf || destination.uf,
+        estadoOrigem: origin.uf,
+        municipioOrigem: origin.cidade,
+        estadoDestino: destination.uf,
+        municipioDestino: destination.cidade,
+        sourceKey,
+        rawResponse: event
+      };
+    })
+    .sort((a, b) => trackingTimestamp(a.dataEvento) - trackingTimestamp(b.dataEvento));
+
+  const latestEvent = eventos[eventos.length - 1] || null;
+  const deliveredEvent = [...eventos].reverse().find((event) =>
+    String(event.descricao || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().includes('ENTREG')
+  ) || null;
+  const postedEvent = eventos.find((event) => {
+    const text = String(event.descricao || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    return String(event.tipo || '').toUpperCase() === 'PO' || text.includes('OBJETO POSTADO');
+  }) || eventos[0] || null;
+  const destinationEvent = deliveredEvent || latestEvent;
+
+  return {
+    transportadora: 'Correios',
+    status: deliveredEvent ? 'Entregue' : eventos.length ? 'Em trânsito' : 'Sem eventos',
+    cidade: destinationEvent?.cidade || null,
+    uf: destinationEvent?.uf || null,
+    cidadeOrigem: postedEvent?.cidade || null,
+    ufOrigem: postedEvent?.uf || null,
+    previsaoEntrega: trackingText(object.dtPrevista, object.previsaoEntrega),
+    dataEntrega: deliveredEvent?.dataEvento || null,
+    ultimaOcorrencia: latestEvent?.descricao || trackingText(object.mensagem) || 'Objeto sem eventos registrados',
+    dataEvento: latestEvent?.dataEvento || null,
+    conhecimento: normalizeTrackingCode(object.codObjeto || object.codigoObjeto || normalizedCode),
+    eventos,
+    rawResponse: data
+  };
+}
+
+async function trackShipment(payload = {}) {
+  const code = normalizeTrackingCode(payload.conhecimento || payload.codigoRastreio);
+  if (!code) {
+    throw new Error('Informe o código de rastreamento dos Correios.');
+  }
+  if (!isValidTrackingCode(code)) {
+    throw new Error('Código de rastreamento dos Correios inválido. Use o formato AA123456789BR.');
+  }
+
+  const config = credentialConfig(payload);
+  const encodedCode = encodeURIComponent(code);
+  const paths = [
+    `/srorastro/v3/v1/objetos/${encodedCode}`,
+    `/srorastro/v1/objetos/${encodedCode}`,
+    `/rastro/v3/v1/objetos/${encodedCode}`,
+    `/rastro/v1/objetos/${encodedCode}`
+  ];
+
+  console.log('Correios API — tracking iniciado:', {
+    environment: config.environment,
+    codigoObjeto: code
+  });
+
+  let lastError;
+  for (const path of paths) {
+    try {
+      const response = await authorizedRequest(
+        config,
+        (token) => axios.get(`${config.host}${path}`, {
+          params: { resultado: 'T' },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json'
+          },
+          timeout: 20000
+        }),
+        'auto'
+      );
+
+      const normalized = normalizeTrackingResponse(response.data, code);
+      console.log('Correios API — tracking concluído:', {
+        codigoObjeto: code,
+        status: normalized.status,
+        ultimaOcorrencia: normalized.ultimaOcorrencia,
+        eventos: normalized.eventos.length,
+        endpoint: path
+      });
+      return normalized;
+    } catch (error) {
+      lastError = error;
+      if (![404, 405].includes(Number(error?.response?.status || 0))) break;
+    }
+  }
+
+  const status = Number(lastError?.response?.status || 0) || null;
+  let message = responseMessage(lastError) || 'Não foi possível consultar o rastreamento nos Correios.';
+
+  if (status === 403) {
+    message = `${message} Verifique se o objeto foi postado pelo contrato vinculado à credencial dos Correios.`;
+  } else if (status === 404) {
+    message = `Objeto ${code} não encontrado na API Rastro dos Correios.`;
+  }
+
+  console.error('Correios API — falha no tracking:', {
+    status,
+    codigoObjeto: code,
+    endpoint: lastError?.config?.url || null,
+    message
+  });
+
+  throw new Error(message);
+}
+
 function normalizeCepResponse(data, cep) {
   const rows = Array.isArray(data)
     ? data
@@ -806,8 +1044,11 @@ async function testConnection(payload) {
 
 module.exports = {
   quoteFreight,
+  trackShipment,
   lookupCep,
   testConnection,
   credentialConfig,
-  parseProducts
+  parseProducts,
+  normalizeTrackingCode,
+  normalizeTrackingResponse
 };

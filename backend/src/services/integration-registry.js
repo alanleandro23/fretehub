@@ -124,7 +124,9 @@ const definitions = [
       );
     },
     trackingReady() {
-      return false;
+      // A API Rastro usa os mesmos hosts oficiais e a mesma credencial
+      // já validada para as demais APIs dos Correios.
+      return true;
     }
   }
 ];

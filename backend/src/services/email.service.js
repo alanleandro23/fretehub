@@ -49,17 +49,79 @@ function trackingReference(tracking) {
         : `Tracking #${tracking?.id || '-'}`;
 }
 
+
+function formatTrackingDestination(tracking) {
+  return [tracking?.cidadeDestino, tracking?.ufDestino].filter(Boolean).join(' / ') || 'não informado';
+}
+
+function formatTemplateDate(value) {
+  if (!value) return new Date().toLocaleString('pt-BR');
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString('pt-BR');
+}
+
+function renderTrackingEmailTemplate(template, variables = {}) {
+  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+    if (!Object.prototype.hasOwnProperty.call(variables, key)) return match;
+    return String(variables[key] ?? '');
+  });
+}
+
+function textToSafeHtml(value) {
+  return escapeHtml(value).replace(/\r?\n/g, '<br>');
+}
+
+function trackingTemplateVariables({ notification = null, tracking = null, user = null, config = {}, title = '', message = '', typeLabel = '' } = {}) {
+  const appUrl = String(config.appUrl || '').replace(/\/$/, '');
+  const trackingId = notification?.trackingId || tracking?.id || null;
+  const link = appUrl && trackingId ? `${appUrl}/?tracking=${trackingId}` : appUrl || '';
+  const reference = notification?.metadata?.reference || trackingReference(tracking);
+  const carrier = notification?.metadata?.carrier || tracking?.carrier?.nome || tracking?.transportadora || 'Transportadora';
+  const dateValue = notification?.metadata?.deliveredAt || notification?.metadata?.eventDate || notification?.metadata?.prediction || notification?.createdAt || tracking?.dataEntrega || new Date();
+
+  return {
+    nome: user?.name || tracking?.user?.name || 'usuário',
+    titulo: title || notification?.title || '',
+    mensagem: message || notification?.message || '',
+    tipo: typeLabel || '',
+    transportadora: carrier,
+    referencia: reference,
+    destino: formatTrackingDestination(tracking),
+    data: formatTemplateDate(dateValue),
+    link
+  };
+}
+
 function buildDeliveryMessage(tracking, config = {}) {
   const reference = trackingReference(tracking);
   const carrier = tracking.carrier?.nome || tracking.transportadora || 'Transportadora';
-  const destination = [tracking.cidadeDestino, tracking.ufDestino].filter(Boolean).join(' / ') || 'não informado';
+  const destination = formatTrackingDestination(tracking);
   const deliveredAt = tracking.dataEntrega
     ? new Date(tracking.dataEntrega).toLocaleString('pt-BR')
     : new Date().toLocaleString('pt-BR');
   const appUrl = String(config.appUrl || '').replace(/\/$/, '');
-  const trackingUrl = appUrl ? `${appUrl}/` : null;
+  const trackingUrl = appUrl ? `${appUrl}/?tracking=${tracking.id}` : null;
 
   const subject = `Carga entregue — ${reference}`;
+  const customTemplate = String(config.trackingEmailCustomText || '').trim();
+  if (customTemplate) {
+    const rendered = renderTrackingEmailTemplate(customTemplate, trackingTemplateVariables({
+      tracking,
+      config,
+      title: subject,
+      message: 'A entrega da carga foi confirmada pelo monitoramento automático.',
+      typeLabel: 'Entrega realizada'
+    }));
+    const text = rendered;
+    const html = `
+      <div style="font-family:Arial,sans-serif;color:#172033;line-height:1.5;max-width:640px">
+        <div style="white-space:normal">${textToSafeHtml(rendered)}</div>
+        ${trackingUrl ? `<p style="margin-top:20px"><a href="${escapeHtml(trackingUrl)}" style="display:inline-block;padding:10px 16px;background:#0b4d85;color:#fff;text-decoration:none;border-radius:6px">Abrir FreteHub</a></p>` : ''}
+      </div>
+    `;
+    return { subject, text, html };
+  }
+
   const text = [
     'A entrega da carga foi confirmada.',
     '',
@@ -103,6 +165,27 @@ function buildNotificationMessage(notification, user, config = {}) {
     : appUrl || null;
   const greeting = user?.name ? `Olá, ${user.name}.` : 'Olá.';
   const label = notificationTypeLabel(notification.type);
+  const customTemplate = String(config.trackingEmailCustomText || '').trim();
+
+  if (customTemplate) {
+    const rendered = renderTrackingEmailTemplate(customTemplate, trackingTemplateVariables({
+      notification,
+      tracking: notification.tracking,
+      user,
+      config,
+      title: notification.title,
+      message: notification.message,
+      typeLabel: label
+    }));
+    const text = rendered;
+    const html = `
+      <div style="font-family:Arial,sans-serif;color:#172033;line-height:1.5;max-width:640px">
+        <div style="white-space:normal">${textToSafeHtml(rendered)}</div>
+        ${trackingUrl ? `<p style="margin-top:20px"><a href="${escapeHtml(trackingUrl)}" style="display:inline-block;padding:10px 16px;background:#0b4d85;color:#fff;text-decoration:none;border-radius:6px">Abrir FreteHub</a></p>` : ''}
+      </div>
+    `;
+    return { subject: notification.title, text, html };
+  }
 
   const text = [
     greeting,
@@ -540,7 +623,8 @@ async function loadEmailConfig() {
     smtpUser,
     smtpPassword,
     smtpFrom,
-    smtpReplyTo
+    smtpReplyTo,
+    trackingEmailCustomText
   ] = await Promise.all([
     getConfigValue('EMAIL_NOTIFICATIONS_ENABLED', 'true'),
     getConfigValue('EMAIL_PROVIDER', ''),
@@ -555,7 +639,8 @@ async function loadEmailConfig() {
     getConfigValue('SMTP_USER', ''),
     getConfigValue('SMTP_PASSWORD', ''),
     getConfigValue('SMTP_FROM', ''),
-    getConfigValue('SMTP_REPLY_TO', '')
+    getConfigValue('SMTP_REPLY_TO', ''),
+    getConfigValue('TRACKING_EMAIL_CUSTOM_TEXT', '')
   ]);
 
   const smtpConfigured = Boolean(String(smtpHost).trim() && String(smtpUser).trim() && String(smtpPassword).trim());
@@ -581,6 +666,7 @@ async function loadEmailConfig() {
     smtpPassword,
     smtpFrom: smtpFrom || emailFrom,
     smtpReplyTo,
+    trackingEmailCustomText,
     smtpConfigured
   };
 }
@@ -640,15 +726,37 @@ async function sendTestEmail(to, requestedBy = null) {
   const config = await loadEmailConfig();
   const recipient = uniqueEmails([to]);
   if (!recipient.length) throw new Error('Informe um e-mail válido para o teste.');
-  const now = new Date().toLocaleString('pt-BR');
-  const subject = 'Teste de e-mail — FreteHub';
-  const text = `O envio de e-mail do FreteHub está funcionando.\n\nData do teste: ${now}`;
-  const html = `<div style="font-family:Arial,sans-serif;color:#172033"><h2>Teste concluído</h2><p>O envio de e-mail do FreteHub está funcionando.</p><p><strong>Data:</strong> ${escapeHtml(now)}</p></div>`;
+
+  const now = new Date();
+  const sampleNotification = {
+    id: 'TESTE',
+    type: 'DELIVERY',
+    title: 'Carga entregue — NF 123456',
+    message: 'Correios confirmou a entrega em São Paulo / SP.',
+    trackingId: 123,
+    createdAt: now,
+    metadata: {
+      reference: 'NF 123456',
+      deliveredAt: now,
+      carrier: 'Correios'
+    },
+    tracking: {
+      id: 123,
+      numeroNota: '123456',
+      cidadeDestino: 'São Paulo',
+      ufDestino: 'SP',
+      carrier: { nome: 'Correios' }
+    }
+  };
+  const preview = buildNotificationMessage(sampleNotification, {
+    name: requestedBy?.name || 'Usuário de teste'
+  }, config);
+
   return sendEmailMessage({
     to: recipient,
-    subject,
-    text,
-    html,
+    subject: `Teste — ${preview.subject}`,
+    text: preview.text,
+    html: preview.html,
     config: { ...config, enabled: true },
     metadata: { event: 'email.test', requestedBy: requestedBy?.id || null }
   });

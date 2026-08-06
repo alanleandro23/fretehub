@@ -17,7 +17,8 @@ const PUBLIC_KEYS = [
   'SMTP_SECURE',
   'SMTP_USER',
   'SMTP_FROM',
-  'SMTP_REPLY_TO'
+  'SMTP_REPLY_TO',
+  'TRACKING_EMAIL_CUSTOM_TEXT'
 ];
 
 const SECRET_KEYS = [
@@ -111,7 +112,8 @@ async function getTrackingAdminConfig() {
     smtpUser,
     smtpFrom,
     smtpReplyTo,
-    smtpPasswordConfigured
+    smtpPasswordConfigured,
+    trackingEmailCustomText
   ] = await Promise.all([
     getConfigValue('JAMEF_TRACKING_URL', ''),
     getConfigValue('BRASPRESS_TRACKING_URL', ''),
@@ -129,7 +131,8 @@ async function getTrackingAdminConfig() {
     getConfigValue('SMTP_USER', ''),
     getConfigValue('SMTP_FROM', ''),
     getConfigValue('SMTP_REPLY_TO', ''),
-    isConfigured('SMTP_PASSWORD')
+    isConfigured('SMTP_PASSWORD'),
+    getConfigValue('TRACKING_EMAIL_CUSTOM_TEXT', '')
   ]);
 
   const provider = String(emailProvider || '').trim().toLowerCase() || (
@@ -163,6 +166,7 @@ async function getTrackingAdminConfig() {
     smtpUser,
     smtpFrom,
     smtpReplyTo,
+    trackingEmailCustomText,
     smtpPasswordConfigured,
     smtpConfigured: Boolean(
       String(smtpHost).trim() &&
@@ -184,6 +188,11 @@ async function updateTrackingAdminConfig(data = {}, user) {
     throw new Error('Porta SMTP inválida.');
   }
 
+  const trackingEmailCustomText = String(data.trackingEmailCustomText || '').trim();
+  if (trackingEmailCustomText.length > 5000) {
+    throw new Error('O texto personalizado do e-mail deve ter no máximo 5.000 caracteres.');
+  }
+
   const updates = {
     JAMEF_TRACKING_URL: validateOptionalUrl(data.jamefTrackingUrl, 'URL de tracking da Jamef'),
     BRASPRESS_TRACKING_URL: validateOptionalUrl(data.braspressTrackingUrl, 'URL de tracking da Braspress'),
@@ -198,7 +207,8 @@ async function updateTrackingAdminConfig(data = {}, user) {
     SMTP_SECURE: String(normalizeBoolean(data.smtpSecure, false)),
     SMTP_USER: String(data.smtpUser || '').trim(),
     SMTP_FROM: String(data.smtpFrom || '').trim(),
-    SMTP_REPLY_TO: String(data.smtpReplyTo || '').trim()
+    SMTP_REPLY_TO: String(data.smtpReplyTo || '').trim(),
+    TRACKING_EMAIL_CUSTOM_TEXT: trackingEmailCustomText
   };
 
   if (provider === 'smtp') {

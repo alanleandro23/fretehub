@@ -259,7 +259,8 @@ async function getTrackingCredential(tracking, carrier) {
     token: credential.tokenCriptografado ? decrypt(credential.tokenCriptografado) : null,
     codigoCliente: credential.codigoCliente,
     contrato: credential.contrato,
-    cnpjVinculado: credential.cnpjVinculado
+    cnpjVinculado: credential.cnpjVinculado,
+    configuracao: credential.configuracao || {}
   };
 }
 
@@ -481,14 +482,26 @@ async function createTracking(data, user) {
   const companyId = await resolveCompanyId(data, user);
   const carrier = await findCarrier(data, companyId);
 
-  const identifiers = [data.notaFiscal, data.numeroNota, data.pedido, data.numeroPedido, data.conhecimento]
+  const carrierDefinition = getDefinition(carrier);
+  const normalizedConhecimento = carrierDefinition?.key === 'correios'
+    ? String(data.conhecimento || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+    : String(data.conhecimento || '').trim();
+
+  const identifiers = [data.notaFiscal, data.numeroNota, data.pedido, data.numeroPedido, normalizedConhecimento]
     .filter((value) => String(value || '').trim());
 
   if (!identifiers.length) {
     throw new Error('Informe pelo menos Nota Fiscal, Pedido ou Conhecimento/CT-e.');
   }
 
-  const carrierDefinition = getDefinition(carrier);
+  if (carrierDefinition?.key === 'correios') {
+    if (!normalizedConhecimento) {
+      throw new Error('Para os Correios, informe o código de rastreamento no campo Código de rastreio.');
+    }
+    if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(normalizedConhecimento)) {
+      throw new Error('Código de rastreamento dos Correios inválido. Use 13 caracteres no formato AA123456789BR.');
+    }
+  }
 
   if (carrierDefinition?.key === 'jamef' && !data.notaFiscal && !data.numeroNota && !data.conhecimento) {
     throw new Error('Para a Jamef, informe a Nota Fiscal ou o Conhecimento/CT-e.');
@@ -524,7 +537,7 @@ async function createTracking(data, user) {
       carrierId: carrier.id,
       numeroNota: String(data.numeroNota || data.notaFiscal || '').trim() || null,
       numeroPedido: String(data.numeroPedido || data.pedido || '').trim() || null,
-      conhecimento: String(data.conhecimento || '').trim() || null,
+      conhecimento: normalizedConhecimento || null,
       documento: onlyNumbers(data.documento) || null,
       destinatarioNome: String(data.destinatarioNome || data.destinatario || '').trim() || null,
       status: 'Criado',

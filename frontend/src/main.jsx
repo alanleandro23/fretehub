@@ -3071,6 +3071,7 @@ function TrackingPage({ user }) {
     emailProvider: 'smtp',
     emailFrom: '',
     appUrl: '',
+    trackingEmailCustomText: '',
     smtpHost: 'smtp.gmail.com',
     smtpPort: '587',
     smtpSecure: false,
@@ -3193,6 +3194,7 @@ function TrackingPage({ user }) {
         emailProvider: data.emailProvider || 'none',
         emailFrom: data.emailFrom || '',
         appUrl: data.appUrl || '',
+        trackingEmailCustomText: data.trackingEmailCustomText || '',
         smtpHost: data.smtpHost || 'smtp.gmail.com',
         smtpPort: String(data.smtpPort || 587),
         smtpSecure: Boolean(data.smtpSecure),
@@ -3338,8 +3340,24 @@ function TrackingPage({ user }) {
       .toLowerCase();
     const isBraspress = normalizedCarrierName.includes('braspress');
     const isCamilo = normalizedCarrierName.includes('camilo');
+    const isCorreios = normalizedCarrierName.includes('correios');
+    let normalizedTrackingReference = form.conhecimento;
 
-    if (isBraspress) {
+    if (isCorreios) {
+      const codigoRastreio = String(form.conhecimento || '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '');
+
+      if (!codigoRastreio) {
+        return alert('Para os Correios, informe o código de rastreamento.');
+      }
+
+      if (!/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(codigoRastreio)) {
+        return alert('Código dos Correios inválido. Use 13 caracteres no formato AA123456789BR.');
+      }
+
+      normalizedTrackingReference = codigoRastreio;
+    } else if (isBraspress) {
       const cnpjTomador = String(form.documento || '').replace(/\D/g, '');
 
       if (cnpjTomador.length !== 14) {
@@ -3371,6 +3389,7 @@ function TrackingPage({ user }) {
     try {
       const payload = {
         ...form,
+        conhecimento: normalizedTrackingReference,
         companyId: Number(form.companyId),
         carrierId: Number(form.carrierId),
         checkIntervalMinutes: 60,
@@ -3575,9 +3594,15 @@ function TrackingPage({ user }) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
-  const trackingDocumentLabel = selectedTrackingCarrierName.includes('camilo')
-    ? 'CNPJ do remetente ou pagador'
-    : 'CNPJ do tomador';
+  const isCorreiosTracking = selectedTrackingCarrierName.includes('correios');
+  const trackingDocumentLabel = isCorreiosTracking
+    ? 'CPF/CNPJ (opcional)'
+    : selectedTrackingCarrierName.includes('camilo')
+      ? 'CNPJ do remetente ou pagador'
+      : 'CNPJ do tomador';
+  const trackingReferenceLabel = isCorreiosTracking
+    ? 'Código de rastreio'
+    : 'Conhecimento / CT-e';
 
   return (
     <div className="trackingPage">
@@ -3691,6 +3716,21 @@ function TrackingPage({ user }) {
               onChange={(event) => setConfigForm({ ...configForm, emailNotificationsEnabled: event.target.checked })}
             />
             Enviar e-mails de entrega, atraso, divergência e falha de consulta
+          </label>
+
+
+          <label className="fieldLabel fieldSpan">
+            Texto personalizado dos e-mails de tracking
+            <textarea
+              rows="8"
+              maxLength="5000"
+              placeholder={'Olá, {{nome}}.\n\n{{titulo}}\n\n{{mensagem}}\n\nTransportadora: {{transportadora}}\nReferência: {{referencia}}\nDestino: {{destino}}\nData: {{data}}'}
+              value={configForm.trackingEmailCustomText}
+              onChange={(event) => setConfigForm({ ...configForm, trackingEmailCustomText: event.target.value })}
+            />
+            <small>
+              Quando preenchido, este texto substitui o corpo padrão dos e-mails de entrega, atraso, divergência e falha. Variáveis disponíveis: {'{{nome}}'}, {'{{titulo}}'}, {'{{mensagem}}'}, {'{{tipo}}'}, {'{{transportadora}}'}, {'{{referencia}}'}, {'{{destino}}'}, {'{{data}}'} e {'{{link}}'}. Deixe vazio para manter o modelo padrão.
+            </small>
           </label>
 
           {configForm.emailProvider === 'smtp' && (
@@ -3906,8 +3946,28 @@ function TrackingPage({ user }) {
         <label className="fieldLabel">{trackingDocumentLabel}<input value={form.documento} onChange={(event) => setForm({ ...form, documento: event.target.value })} /></label>
         <label className="fieldLabel">Nota Fiscal<input value={form.notaFiscal} onChange={(event) => setForm({ ...form, notaFiscal: event.target.value })} /></label>
         <label className="fieldLabel">Pedido<input value={form.pedido} onChange={(event) => setForm({ ...form, pedido: event.target.value })} /></label>
-        <label className="fieldLabel">Conhecimento / CT-e<input value={form.conhecimento} onChange={(event) => setForm({ ...form, conhecimento: event.target.value })} /></label>
+        <label className="fieldLabel">
+          {trackingReferenceLabel}
+          <input
+            value={form.conhecimento}
+            onChange={(event) => setForm({
+              ...form,
+              conhecimento: isCorreiosTracking
+                ? event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 13)
+                : event.target.value
+            })}
+            placeholder={isCorreiosTracking ? 'Ex.: AA123456789BR' : ''}
+            maxLength={isCorreiosTracking ? 13 : undefined}
+            required={isCorreiosTracking}
+          />
+        </label>
         <label className="fieldLabel">Destinatário<input value={form.destinatarioNome} onChange={(event) => setForm({ ...form, destinatarioNome: event.target.value })} placeholder="Nome ou razão social" /></label>
+
+        {isCorreiosTracking && (
+          <div className="formNotice fieldSpan">
+            Nos Correios, o monitoramento é feito pelo código de rastreio de 13 caracteres. Somente objetos vinculados ao contrato da credencial podem ser consultados.
+          </div>
+        )}
 
         {isAdmin && editingId && (
           <>
@@ -3998,7 +4058,7 @@ function TrackingPage({ user }) {
           </label>
           <label className="fieldLabel">Nota Fiscal<input placeholder="Número da NF" value={filters.notaFiscal} onChange={(event) => setFilters({ ...filters, notaFiscal: event.target.value })} /></label>
           <label className="fieldLabel">Pedido<input placeholder="Número do pedido" value={filters.pedido} onChange={(event) => setFilters({ ...filters, pedido: event.target.value })} /></label>
-          <label className="fieldLabel">Conhecimento / CT-e<input placeholder="Número do CT-e" value={filters.conhecimento} onChange={(event) => setFilters({ ...filters, conhecimento: event.target.value })} /></label>
+          <label className="fieldLabel">Conhecimento / código de rastreio<input placeholder="CT-e ou código dos Correios" value={filters.conhecimento} onChange={(event) => setFilters({ ...filters, conhecimento: event.target.value })} /></label>
           <label className="fieldLabel">Destinatário<input placeholder="Nome ou razão social" value={filters.destinatario} onChange={(event) => setFilters({ ...filters, destinatario: event.target.value })} /></label>
           <label className="fieldLabel">CNPJ / CPF<input placeholder="Documento do tracking" value={filters.documento} onChange={(event) => setFilters({ ...filters, documento: event.target.value })} /></label>
           <label className="fieldLabel">Comprovante
@@ -4056,7 +4116,7 @@ function TrackingPage({ user }) {
               <div className="trackingResponsiveShipment">
                 <span className="trackingResponsiveLabel">Documentos e destino</span>
                 <strong>NF {row.notaFiscal || '-'}</strong>
-                <small>Pedido {row.pedido || '-'} · CT-e {row.conhecimento || '-'}</small>
+                <small>Pedido {row.pedido || '-'} · {String(row.transportadora || '').toLowerCase().includes('correios') ? 'Rastreio' : 'CT-e'} {row.conhecimento || '-'}</small>
                 <span>{row.cidade || '-'} / {row.uf || '-'}</span>
                 {row.destinatarioNome && <small>Destinatário: {row.destinatarioNome}</small>}
               </div>
