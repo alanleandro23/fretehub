@@ -423,7 +423,8 @@ function Layout({ children, setPage, page, user }) {
     can(user, 'PRODUCT_MANAGE') && ['products', 'Produtos', Package],
     can(user, 'COMPANY_MANAGE') && ['companies', 'Empresas', Building2],
     can(user, 'CARRIER_MANAGE') && ['carriers', 'Transportadoras', Truck],
-    can(user, 'CREDENTIAL_MANAGE') && ['credentials', 'Credenciais', KeyRound]
+    can(user, 'CREDENTIAL_MANAGE') && ['credentials', 'Credenciais', KeyRound],
+    user?.role === 'ADMIN' && ['system-update', 'Atualização do sistema', Upload]
   ].filter(Boolean);
 
   const items = [
@@ -1894,6 +1895,255 @@ function ChangePassword({ user, onChanged }) {
 }
 
 
+
+function SystemUpdateAdmin() {
+  const [info, setInfo] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [validated, setValidated] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [validating, setValidating] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [error, setError] = useState('');
+
+  async function loadStatus(silent = false) {
+    if (!silent) setLoading(true);
+    try {
+      const response = await api.get('/system-update/status');
+      setInfo(response.data);
+    } catch (requestError) {
+      if (!silent) {
+        setError(requestError.response?.data?.error || requestError.response?.data?.message || 'Erro ao consultar o atualizador.');
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadStatus();
+    const timer = setInterval(() => loadStatus(true), 4000);
+    return () => clearInterval(timer);
+  }, []);
+
+  function humanSize(bytes) {
+    const value = Number(bytes || 0);
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  async function validatePackage(event) {
+    event.preventDefault();
+    if (!selectedFile) return setError('Selecione um pacote .zip de atualização.');
+    setError('');
+    setValidating(true);
+    try {
+      const response = await api.post('/system-update/validate', selectedFile, {
+        headers: {
+          'Content-Type': 'application/zip',
+          'X-FreteHub-Filename': encodeURIComponent(selectedFile.name)
+        }
+      });
+      setValidated(response.data);
+      await loadStatus(true);
+    } catch (requestError) {
+      setValidated(null);
+      setError(requestError.response?.data?.error || requestError.response?.data?.message || 'Pacote recusado.');
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  async function installPackage() {
+    if (!validated) return;
+    const migration = Boolean(validated.manifest?.requiresDatabaseMigration);
+    const warning = migration
+      ? `A versão ${validated.manifest.version} possui migration de banco. O backup automático será executado antes da instalação. Continuar?`
+      : `Instalar a versão ${validated.manifest.version}? O sistema fará backup antes da atualização.`;
+    if (!window.confirm(warning)) return;
+
+    setError('');
+    setInstalling(true);
+    try {
+      const response = await api.post(`/system-update/${validated.id}/install`);
+      setInfo(response.data);
+      setValidated(null);
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || requestError.response?.data?.message || 'Não foi possível iniciar a atualização.');
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function discardPackage(item) {
+    if (!window.confirm(`Remover o pacote da versão ${item.manifest?.version || '-'}?`)) return;
+    try {
+      await api.delete(`/system-update/${item.id}`);
+      if (validated?.id === item.id) setValidated(null);
+      await loadStatus(true);
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || requestError.response?.data?.message || 'Não foi possível remover o pacote.');
+    }
+  }
+
+  const state = info?.status?.state || 'IDLE';
+  const stateLabels = {
+    IDLE: 'Aguardando',
+    QUEUED: 'Na fila',
+    PREPARING: 'Preparando',
+    BACKUP: 'Gerando backup',
+    UPDATING_CODE: 'Atualizando código',
+    DEPENDENCIES: 'Atualizando dependências',
+    DATABASE: 'Atualizando banco',
+    BUILDING: 'Compilando frontend',
+    PUBLISHING: 'Publicando',
+    HEALTHCHECK: 'Validando aplicação',
+    SUCCESS: 'Concluída',
+    FAILED: 'Falhou'
+  };
+
+  return (
+    <div>
+      <div className="pageHeader">
+        <div>
+          <h1>Atualização do sistema</h1>
+          <p>Valide e instale releases oficiais do FreteHub sem substituir arquivos manualmente.</p>
+        </div>
+        <button type="button" className="btn-secondary" onClick={() => loadStatus()} disabled={loading}>
+          <RefreshCw size={16} /> Atualizar status
+        </button>
+      </div>
+
+      {error && <div className="formError">{error}</div>}
+
+      <div className="card formGrid">
+        <div>
+          <small>VERSÃO INSTALADA</small>
+          <h2 style={{ margin: '6px 0' }}>v{info?.currentVersion || '...'}</h2>
+          <span className="badge badge-success">FreteHub em execução</span>
+        </div>
+        <div>
+          <small>AGENTE DO SERVIDOR</small>
+          <h3 style={{ margin: '8px 0' }}>{info?.updaterReady ? 'Pronto' : 'Não habilitado'}</h3>
+          <span className={`badge ${info?.updaterReady ? 'badge-success' : 'badge-alert'}`}>
+            {info?.updaterReady ? 'Instalação automática disponível' : 'Somente validação neste ambiente'}
+          </span>
+        </div>
+        <div>
+          <small>ÚLTIMA ATIVIDADE</small>
+          <h3 style={{ margin: '8px 0' }}>{stateLabels[state] || state}</h3>
+          <span>{info?.status?.message || 'Nenhuma atualização em processamento.'}</span>
+        </div>
+      </div>
+
+      {!info?.updaterReady && (
+        <div className="formNotice">
+          No ambiente local Windows o painel pode validar os pacotes. A instalação automática é habilitada somente no servidor Ubuntu, por meio do agente systemd do FreteHub.
+        </div>
+      )}
+
+      <form className="card" onSubmit={validatePackage}>
+        <div className="pageHeader">
+          <div>
+            <h2 style={{ margin: 0 }}>Carregar nova versão</h2>
+            <p>Use somente pacotes gerados pelo empacotador oficial do projeto.</p>
+          </div>
+          <ShieldCheck size={28} />
+        </div>
+
+        <label className="fieldLabel">
+          Pacote de atualização (.zip)
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            onChange={(event) => {
+              setSelectedFile(event.target.files?.[0] || null);
+              setValidated(null);
+              setError('');
+            }}
+          />
+        </label>
+
+        {selectedFile && (
+          <p><strong>{selectedFile.name}</strong> · {humanSize(selectedFile.size)}</p>
+        )}
+
+        <button type="submit" disabled={!selectedFile || validating}>
+          <Upload size={16} /> {validating ? 'Validando pacote...' : 'Validar atualização'}
+        </button>
+      </form>
+
+      {validated && (
+        <div className="card">
+          <div className="pageHeader">
+            <div>
+              <h2 style={{ margin: 0 }}>Pacote aprovado</h2>
+              <p>Checksum e manifesto foram validados pelo backend.</p>
+            </div>
+            <CircleCheck size={30} />
+          </div>
+          <div className="formGrid">
+            <div><small>NOVA VERSÃO</small><h3>v{validated.manifest?.version}</h3></div>
+            <div><small>VERSÃO MÍNIMA</small><h3>{validated.manifest?.minimumVersion ? `v${validated.manifest.minimumVersion}` : 'Sem restrição'}</h3></div>
+            <div><small>BANCO DE DADOS</small><h3>{validated.manifest?.requiresDatabaseMigration ? 'Possui migration' : 'Sem migration'}</h3></div>
+          </div>
+          <p>{validated.manifest?.description || 'Sem notas adicionais para esta versão.'}</p>
+          <p><small>Commit: <code>{validated.manifest?.targetCommit}</code></small></p>
+          <p><small>SHA-256 do pacote: <code>{validated.sha256}</code></small></p>
+          <button type="button" onClick={installPackage} disabled={!info?.updaterReady || installing}>
+            <RefreshCw size={16} /> {installing ? 'Enfileirando...' : 'Instalar atualização'}
+          </button>
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Pacotes validados</h2>
+        <div className="tableScroll">
+          <table>
+            <thead><tr><th>Versão</th><th>Arquivo</th><th>Upload</th><th>Migration</th><th>Ação</th></tr></thead>
+            <tbody>
+              {(info?.staged || []).map((item) => (
+                <tr key={item.id}>
+                  <td><strong>v{item.manifest?.version}</strong></td>
+                  <td>{item.fileName}<br /><small>{humanSize(item.size)}</small></td>
+                  <td>{item.uploadedAt ? new Date(item.uploadedAt).toLocaleString('pt-BR') : '-'}</td>
+                  <td>{item.manifest?.requiresDatabaseMigration ? 'Sim' : 'Não'}</td>
+                  <td>
+                    <button type="button" className="btn-danger" onClick={() => discardPackage(item)}>
+                      <Trash2 size={15} /> Remover
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!info?.staged?.length && <tr><td colSpan="5">Nenhum pacote validado.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Histórico de instalações</h2>
+        <div className="tableScroll">
+          <table>
+            <thead><tr><th>Versão</th><th>Data</th><th>Status</th><th>Commit</th></tr></thead>
+            <tbody>
+              {(info?.history || []).map((item, index) => (
+                <tr key={`${item.version || 'update'}-${item.finishedAt || index}`}>
+                  <td><strong>v{item.version || '-'}</strong></td>
+                  <td>{item.finishedAt ? new Date(item.finishedAt).toLocaleString('pt-BR') : '-'}</td>
+                  <td>{item.state === 'SUCCESS' ? 'Sucesso' : item.state || '-'}</td>
+                  <td><code>{item.targetCommit ? String(item.targetCommit).slice(0, 12) : '-'}</code></td>
+                </tr>
+              ))}
+              {!info?.history?.length && <tr><td colSpan="4">Nenhuma atualização instalada pelo painel ainda.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProposalModal({ quote, onClose, onSent }) {
   const [form, setForm] = useState({
     to: '',
@@ -2199,7 +2449,7 @@ function applyFrequentRecipient(value) {
 
   useEffect(() => {
     Promise.all([
-      api.get('/companies'),
+      api.get('/quotes/companies/available'),
       api.get('/products?limit=500'),
       api.get('/quotes/recipients/frequent')
     ])
@@ -4104,21 +4354,22 @@ function TrackingPage({ user }) {
         <div className="trackingResponsiveList">
           {rows.map((row) => (
             <article className="trackingResponsiveItem" key={row.id}>
+              <div className="trackingResponsiveShipment">
+                <span className="trackingResponsiveLabel">Destinatário</span>
+                <strong>{row.destinatarioNome || '-'}</strong>
+                <span>{row.cidade || '-'} / {row.uf || '-'}</span>
+                <small>NF {row.notaFiscal || '-'} · Pedido {row.pedido || '-'}</small>
+                <small>{String(row.transportadora || '').toLowerCase().includes('correios') ? 'Rastreio' : 'CT-e'} {row.conhecimento || '-'}</small>
+              </div>
+
               <div className="trackingResponsiveIdentity">
+                <span className="trackingResponsiveLabel">Remetente</span>
+                <strong>{row.company?.nomeFantasia || row.company?.razaoSocial || '-'}</strong>
                 <div className="trackingItemTopline">
                   <span className={`badge ${statusClass(row)}`}>{row.status || '-'}</span>
                   <strong>{row.transportadora}</strong>
                 </div>
-                <strong>{row.company?.nomeFantasia || row.company?.razaoSocial || '-'}</strong>
                 <small>Cadastrado por: {row.user?.name || '-'}</small>
-              </div>
-
-              <div className="trackingResponsiveShipment">
-                <span className="trackingResponsiveLabel">Documentos e destino</span>
-                <strong>NF {row.notaFiscal || '-'}</strong>
-                <small>Pedido {row.pedido || '-'} · {String(row.transportadora || '').toLowerCase().includes('correios') ? 'Rastreio' : 'CT-e'} {row.conhecimento || '-'}</small>
-                <span>{row.cidade || '-'} / {row.uf || '-'}</span>
-                {row.destinatarioNome && <small>Destinatário: {row.destinatarioNome}</small>}
               </div>
 
               <div className="trackingResponsiveOperation">
@@ -4659,6 +4910,7 @@ function App() {
       ...(can(user, 'CREDENTIAL_MANAGE') ? { credentials: <Credentials /> } : {}),
       ...(can(user, 'PRODUCT_MANAGE') ? { products: <ProductsAdmin /> } : {}),
       ...(can(user, 'USER_MANAGE') ? { users: <UsersAdmin /> } : {}),
+      ...(user?.role === 'ADMIN' ? { 'system-update': <SystemUpdateAdmin /> } : {}),
       password: (
         <ChangePassword
           user={user}

@@ -9,6 +9,35 @@ const { sendQuoteProposal } = require('../services/quote-proposal.service');
 
 router.use(auth);
 
+router.get('/companies/available', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
+  try {
+    const companies = await prisma.company.findMany({
+      where: { ativo: true },
+      select: {
+        id: true,
+        razaoSocial: true,
+        nomeFantasia: true,
+        cnpj: true,
+        cep: true,
+        endereco: true,
+        numero: true,
+        complemento: true,
+        bairro: true,
+        cidade: true,
+        uf: true,
+        ativo: true
+      },
+      orderBy: { razaoSocial: 'asc' }
+    });
+    res.json(companies);
+  } catch (error) {
+    res.status(500).json({
+      message: 'Erro ao carregar empresas disponíveis para cotação.',
+      error: error.message
+    });
+  }
+});
+
 function accessWhere() {
   // O histórico de cotações salvas é compartilhado entre todos os usuários autenticados.
   return {};

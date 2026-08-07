@@ -1,0 +1,9 @@
+[Unit]
+Description=FreteHub - observa solicitações de atualização
+
+[Path]
+PathExists=/var/lib/fretehub/updates/install.request
+Unit=fretehub-updater.service
+
+[Install]
+WantedBy=multi-user.target

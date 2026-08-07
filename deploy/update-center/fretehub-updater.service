@@ -1,0 +1,10 @@
+[Unit]
+Description=FreteHub - instalador controlado de atualizações
+After=network.target postgresql.service nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fretehub-updater
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

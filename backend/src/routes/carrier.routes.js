@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const prisma = require('../db');
 const auth = require('../middleware/auth');
-const { adminOnly } = require('../middleware/auth');
+const { adminOnly, requirePermission, PERMISSIONS } = require('../middleware/auth');
 const { evaluateCarrier } = require('../services/integration-registry');
 
 router.use(auth);
@@ -50,11 +50,11 @@ router.get('/', async (req, res) => {
   }
 });
 
-router.get('/available-for-quote', async (req, res) => {
+router.get('/available-for-quote', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
   try {
-    const companyId = req.user.role === 'ADMIN'
-      ? Number(req.query.companyId || 0)
-      : Number(req.user.companyId || 0);
+    // Na tela de cotação, ADMIN e OPERATOR podem escolher a empresa remetente.
+    // A consulta usa a empresa selecionada para localizar as credenciais corretas.
+    const companyId = Number(req.query.companyId || req.user.companyId || 0);
 
     if (!companyId) {
       return res.json([]);

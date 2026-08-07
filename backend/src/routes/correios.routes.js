@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const prisma = require('../db');
 const auth = require('../middleware/auth');
+const { requirePermission, PERMISSIONS } = require('../middleware/auth');
 const { decrypt } = require('../utils/crypto');
 const { evaluateCarrier } = require('../services/integration-registry');
 const correios = require('../services/integrations/correios.service');
@@ -24,9 +25,10 @@ function credentialPayload(row) {
 }
 
 async function correiosContext(req) {
-  const companyId = req.user.role === 'ADMIN'
-    ? Number(req.query.companyId || req.body?.companyId || 0)
-    : Number(req.user.companyId || 0);
+  // Usa a empresa selecionada na cotação para localizar contrato/cartão/credenciais.
+  const companyId = Number(
+    req.query.companyId || req.body?.companyId || req.user.companyId || 0
+  );
 
   if (!companyId) {
     throw new Error('Selecione uma empresa para utilizar a integração dos Correios.');
@@ -80,7 +82,7 @@ async function correiosContext(req) {
   };
 }
 
-router.get('/cep/:cep', async (req, res) => {
+router.get('/cep/:cep', requirePermission(PERMISSIONS.QUOTE_CREATE), async (req, res) => {
   try {
     const context = await correiosContext(req);
     const address = await correios.lookupCep(context, req.params.cep);

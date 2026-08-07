@@ -1512,11 +1512,11 @@ function normalizeTracking(tracking) {
       return aTime - bTime;
     });
 
-  // "CRIADO" permanece sempre no topo. Depois vêm as ocorrências reais
-  // da transportadora na mesma ordem cronológica exibida no portal.
+  // Exibição da timeline: ocorrência mais recente no topo para ficar visível
+  // assim que a janela é aberta. O evento inicial "CRIADO" fica no final.
   const logisticsEvents = [
-    ...(createdEvents.length ? [createdEvents[0]] : []),
-    ...carrierEvents
+    ...[...carrierEvents].reverse(),
+    ...(createdEvents.length ? [createdEvents[0]] : [])
   ];
 
   const lastCarrierEvent = carrierEvents.length

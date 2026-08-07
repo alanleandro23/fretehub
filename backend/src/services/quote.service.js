@@ -343,12 +343,12 @@ async function prepareCarrierContexts(companyId, carrierIds) {
 }
 
 async function prepareQuoteContext(user, body) {
-  const companyId = user.role === 'ADMIN'
-    ? Number(body.companyId)
-    : Number(user.companyId);
+  // Usuários com permissão de cotação (ADMIN e OPERATOR) podem selecionar
+  // qualquer empresa remetente ativa cadastrada na plataforma.
+  const companyId = Number(body.companyId || user.companyId || 0);
 
   if (!Number.isInteger(companyId) || companyId <= 0) {
-    throw new Error('O usuário precisa estar vinculado a uma empresa remetente.');
+    throw new Error('Selecione uma empresa remetente para gerar a cotação.');
   }
 
   const company = await prisma.company.findFirst({
@@ -616,15 +616,10 @@ async function generateQuotePreview(user, body) {
 }
 
 function assertDraftAccess(draft, user) {
+  // A prévia só pode ser salva pelo mesmo usuário que a gerou.
+  // O companyId já foi validado como empresa ativa durante a geração.
   if (Number(draft.owner?.userId) !== Number(user.id)) {
     throw new Error('Esta prévia pertence a outro usuário. Gere uma nova cotação.');
-  }
-
-  if (
-    user.role !== 'ADMIN' &&
-    Number(draft.owner?.companyId) !== Number(user.companyId)
-  ) {
-    throw new Error('Você não tem acesso à empresa desta cotação.');
   }
 }
 

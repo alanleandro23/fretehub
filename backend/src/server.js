@@ -32,7 +32,8 @@ app.use('/carrier-credentials', require('./routes/credential.routes'));
 app.use('/correios', require('./routes/correios.routes'));
 app.use('/quotes', require('./routes/quote.routes'));
 app.use('/tracking', require('./routes/tracking.routes'));
-app.use('/notifications', require('./routes/notification.routes'));
+
+app.use('/system-update', require('./routes/system-update.routes'));
 
 app.get('/health', (_, res) => {
   res.json({ ok: true, app: 'FreteHub' });
@@ -56,7 +57,7 @@ server.on('error', (error) => {
   console.error('Erro ao iniciar a API:', error);
 
   if (error.code === 'EADDRINUSE') {
-    console.error(`A porta ${PORT} já está sendo utilizada por outro processo.`);
+    console.error(`A porta ${PORT} jÃ¡ estÃ¡ sendo utilizada por outro processo.`);
   }
 
   process.exitCode = 1;
@@ -72,7 +73,7 @@ function shutdown(signal) {
   });
 
   setTimeout(() => {
-    console.error('Encerramento forçado após 10 segundos.');
+    console.error('Encerramento forÃ§ado apÃ³s 10 segundos.');
     process.exit(1);
   }, 10000).unref();
 }

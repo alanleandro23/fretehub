@@ -1,4 +1,4 @@
-# Dependências
+# DependÃªncias
 node_modules/
 
 # Builds
@@ -6,7 +6,7 @@ dist/
 build/
 coverage/
 
-# Variáveis de ambiente e credenciais
+# VariÃ¡veis de ambiente e credenciais
 .env
 .env.*
 !.env.example
@@ -19,7 +19,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Backups e arquivos temporários
+# Backups e arquivos temporÃ¡rios
 backup/
 backups/
 backup-*/
@@ -46,3 +46,7 @@ backend/storage/delivery-proofs/
 
 # Logomarcas locais das empresas
 backend/storage/company-logos/
+
+# Centro de Atualizacoes
+backend/storage/system-updates/
+releases/
