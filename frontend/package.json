@@ -1,6 +1,6 @@
 {
   "name": "fretehub-frontend",
-  "version": "1.0.1",
+  "version": "1.3.0",
   "private": true,
   "scripts": {
     "dev": "vite --host 0.0.0.0",
