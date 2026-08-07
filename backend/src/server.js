@@ -12,9 +12,12 @@ const {
 const app = express();
 
 app.get('/health', (req, res) => {
+  const { version } = require('../package.json');
+
   res.status(200).json({
     status: 'ok',
-    service: 'fretehub-api'
+    service: 'fretehub-api',
+    version
   });
 });
 
