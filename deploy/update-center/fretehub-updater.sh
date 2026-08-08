@@ -60,15 +60,25 @@ write_status() {
   local message="$2"
   local version="${3:-}"
   local update_id="${4:-}"
-  python3 - "$STATUS_FILE" "$state" "$message" "$version" "$update_id" <<'PY'
+  local progress="${5:-0}"
+  local previous_state="${6:-}"
+  CURRENT_STATE="$state"
+  CURRENT_PROGRESS="$progress"
+  python3 - "$STATUS_FILE" "$state" "$message" "$version" "$update_id" "$progress" "$previous_state" <<'PY'
 import json, os, sys, tempfile
 from datetime import datetime, timezone
-file, state, message, version, update_id = sys.argv[1:]
+file, state, message, version, update_id, progress, previous_state = sys.argv[1:]
+try:
+    progress_value = max(0, min(100, int(float(progress))))
+except Exception:
+    progress_value = 0
 data = {
   'state': state,
   'message': message,
   'version': version or None,
   'updateId': update_id or None,
+  'progress': progress_value,
+  'previousState': previous_state or None,
   'updatedAt': datetime.now(timezone.utc).isoformat()
 }
 dirname = os.path.dirname(file)
@@ -84,7 +94,6 @@ finally:
     if os.path.exists(tmp): os.unlink(tmp)
 PY
 }
-
 write_history() {
   local state="$1"
   local message="$2"
@@ -133,6 +142,8 @@ EXPECTED_SHA="$(json_get "$META_FILE" sha256)"
 REQUIRES_MIGRATION="$(json_get "$META_FILE" manifest.requiresDatabaseMigration)"
 OLD_COMMIT=""
 BACKUP_FILE=""
+CURRENT_STATE="PREPARING"
+CURRENT_PROGRESS="5"
 WORKDIR="$(mktemp -d /tmp/fretehub-update.XXXXXX)"
 
 cleanup() {
@@ -147,7 +158,7 @@ rollback_code_best_effort() {
   set +e
   run_as_app "cd '$APP_ROOT' && git reset --hard '$OLD_COMMIT'"
   run_as_app "cd '$APP_ROOT/backend' && npm ci --no-audit --no-fund && npx prisma generate"
-  run_as_app "cd '$APP_ROOT/frontend' && test -f .env.production || printf 'VITE_API_URL=/api\\n' > .env.production; npm ci --no-audit --no-fund && npm run build"
+  run_as_app "cd '$APP_ROOT/frontend' && test -f .env.production || printf 'VITE_API_URL=/api\\n' > .env.production; npm ci --include=optional --no-audit --no-fund && npm run build"
   if [[ -d "$APP_ROOT/frontend/dist" ]]; then
     mkdir -p "$WEB_ROOT"
     find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -163,12 +174,12 @@ fail_update() {
   local message="$1"
   echo "FALHA: $message"
   rollback_code_best_effort
-  write_status "FAILED" "$message" "$VERSION" "$UPDATE_ID"
+  write_status "FAILED" "$message" "$VERSION" "$UPDATE_ID" "$CURRENT_PROGRESS" "$CURRENT_STATE"
   write_history "FAILED" "$message" "$VERSION" "$TARGET_COMMIT" "$OLD_COMMIT" "$UPDATE_ID" "$REQUIRES_MIGRATION" "$BACKUP_FILE"
   exit 1
 }
 
-write_status "PREPARING" "Validando pacote e ambiente." "$VERSION" "$UPDATE_ID"
+write_status "PREPARING" "Validando pacote e ambiente." "$VERSION" "$UPDATE_ID" "5"
 
 echo "=== FreteHub updater ==="
 echo "Versão alvo: $VERSION"
@@ -194,6 +205,11 @@ with zipfile.ZipFile(package) as zf:
             dst.write(src.read())
 PY
 
+# A pasta temporária nasce como root, mas os comandos Git rodam como APP_USER.
+chown -R "$APP_USER":"$APP_USER" "$WORKDIR"
+chmod 750 "$WORKDIR"
+chmod 640 "$WORKDIR/fretehub.bundle" "$WORKDIR/manifest.json"
+
 BUNDLE="$WORKDIR/fretehub.bundle"
 MANIFEST="$WORKDIR/manifest.json"
 MANIFEST_COMMIT="$(json_get "$MANIFEST" targetCommit)"
@@ -206,29 +222,29 @@ DIRTY="$(run_as_app "cd '$APP_ROOT' && git status --porcelain")"
 
 OLD_COMMIT="$(run_as_app "cd '$APP_ROOT' && git rev-parse HEAD")"
 
-write_status "BACKUP" "Gerando backup completo antes da atualização." "$VERSION" "$UPDATE_ID"
+write_status "BACKUP" "Gerando backup completo antes da atualização." "$VERSION" "$UPDATE_ID" "15"
 BACKUP_OUTPUT="$(/usr/local/sbin/fretehub-backup)" || fail_update "Falha ao gerar backup preventivo."
 BACKUP_FILE="$(printf '%s\n' "$BACKUP_OUTPUT" | sed -n 's/^Arquivo: //p' | tail -1)"
 echo "$BACKUP_OUTPUT"
 
-write_status "UPDATING_CODE" "Aplicando o commit da nova versão." "$VERSION" "$UPDATE_ID"
-run_as_app "cd '$APP_ROOT' && git bundle verify '$BUNDLE' >/dev/null"
-run_as_app "cd '$APP_ROOT' && git fetch '$BUNDLE' main"
+write_status "UPDATING_CODE" "Aplicando o commit da nova versão." "$VERSION" "$UPDATE_ID" "30"
+run_as_app "cd '$APP_ROOT' && git bundle verify '$BUNDLE' >/dev/null" || fail_update "Falha ao validar o Git bundle."
+run_as_app "cd '$APP_ROOT' && git fetch '$BUNDLE' main" || fail_update "Falha ao importar o Git bundle."
 FETCHED_COMMIT="$(run_as_app "cd '$APP_ROOT' && git rev-parse FETCH_HEAD")"
 [[ "$FETCHED_COMMIT" == "$TARGET_COMMIT" ]] || fail_update "Commit recebido não corresponde ao manifesto."
 run_as_app "cd '$APP_ROOT' && git merge-base --is-ancestor '$OLD_COMMIT' '$FETCHED_COMMIT'" || fail_update "A atualização não é fast-forward da versão instalada."
 run_as_app "cd '$APP_ROOT' && git merge --ff-only FETCH_HEAD"
 
-write_status "DEPENDENCIES" "Atualizando dependências e Prisma Client." "$VERSION" "$UPDATE_ID"
+write_status "DEPENDENCIES" "Atualizando dependências e Prisma Client." "$VERSION" "$UPDATE_ID" "45"
 run_as_app "cd '$APP_ROOT/backend' && npm ci --no-audit --no-fund && npx prisma generate" || fail_update "Falha nas dependências do backend."
 
-write_status "DATABASE" "Aplicando migrations pendentes do banco." "$VERSION" "$UPDATE_ID"
+write_status "DATABASE" "Aplicando migrations pendentes do banco." "$VERSION" "$UPDATE_ID" "58"
 run_as_app "cd '$APP_ROOT/backend' && npx prisma migrate deploy" || fail_update "Falha ao aplicar migrations. O backup preventivo deve ser preservado."
 
-write_status "BUILDING" "Compilando o frontend de produção." "$VERSION" "$UPDATE_ID"
-run_as_app "cd '$APP_ROOT/frontend' && test -f .env.production || printf 'VITE_API_URL=/api\\n' > .env.production; npm ci --no-audit --no-fund && npm run build" || fail_update "Falha ao compilar o frontend."
+write_status "BUILDING" "Compilando o frontend de produção." "$VERSION" "$UPDATE_ID" "70"
+run_as_app "cd '$APP_ROOT/frontend' && test -f .env.production || printf 'VITE_API_URL=/api\\n' > .env.production; npm ci --include=optional --no-audit --no-fund && npm run build" || fail_update "Falha ao compilar o frontend."
 
-write_status "PUBLISHING" "Publicando a nova versão e reiniciando a API." "$VERSION" "$UPDATE_ID"
+write_status "PUBLISHING" "Publicando a nova versão e reiniciando a API." "$VERSION" "$UPDATE_ID" "85"
 mkdir -p "$WEB_ROOT"
 find "$WEB_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -a "$APP_ROOT/frontend/dist/." "$WEB_ROOT/"
@@ -237,10 +253,24 @@ nginx -t || fail_update "Configuração do Nginx inválida."
 run_as_app "pm2 restart fretehub-api --update-env && pm2 save" || fail_update "Falha ao reiniciar a API no PM2."
 systemctl reload nginx || fail_update "Falha ao recarregar o Nginx."
 
-write_status "HEALTHCHECK" "Validando a aplicação após a atualização." "$VERSION" "$UPDATE_ID"
+write_status "HEALTHCHECK" "Validando a aplicação após a atualização." "$VERSION" "$UPDATE_ID" "95"
 sleep 3
 curl -fsS --max-time 10 http://127.0.0.1:3001/health >/dev/null || fail_update "Health check da API falhou."
 curl -fsSI --max-time 10 http://127.0.0.1/ >/dev/null || fail_update "Health check do frontend falhou."
+
+# Atualiza o próprio agente de forma atômica para que as próximas releases
+# usem sempre a versão do updater que veio junto com o código aprovado.
+if [[ -f "$APP_ROOT/deploy/update-center/fretehub-updater.sh" ]]; then
+  install -o root -g root -m 750 "$APP_ROOT/deploy/update-center/fretehub-updater.sh" /usr/local/sbin/fretehub-updater.next
+  mv -f /usr/local/sbin/fretehub-updater.next /usr/local/sbin/fretehub-updater
+fi
+if [[ -f "$APP_ROOT/deploy/update-center/fretehub-updater.service" ]]; then
+  install -o root -g root -m 644 "$APP_ROOT/deploy/update-center/fretehub-updater.service" /etc/systemd/system/fretehub-updater.service
+fi
+if [[ -f "$APP_ROOT/deploy/update-center/fretehub-updater.path" ]]; then
+  install -o root -g root -m 644 "$APP_ROOT/deploy/update-center/fretehub-updater.path" /etc/systemd/system/fretehub-updater.path
+fi
+systemctl daemon-reload
 
 python3 - "$UPDATE_ROOT/current.json" "$VERSION" "$TARGET_COMMIT" "$OLD_COMMIT" <<'PY'
 import json, os, sys, tempfile
@@ -260,7 +290,7 @@ os.chmod(tmp, 0o644)
 os.replace(tmp, file)
 PY
 
-write_status "SUCCESS" "Atualização instalada e validada com sucesso." "$VERSION" "$UPDATE_ID"
+write_status "SUCCESS" "Atualização instalada e validada com sucesso." "$VERSION" "$UPDATE_ID" "100"
 write_history "SUCCESS" "Atualização instalada e validada com sucesso." "$VERSION" "$TARGET_COMMIT" "$OLD_COMMIT" "$UPDATE_ID" "$REQUIRES_MIGRATION" "$BACKUP_FILE"
 
 mv "$PACKAGE_FILE" "$ARCHIVE_DIR/${STAMP}-${VERSION}.zip"

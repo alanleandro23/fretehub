@@ -1921,7 +1921,7 @@ function SystemUpdateAdmin() {
 
   useEffect(() => {
     loadStatus();
-    const timer = setInterval(() => loadStatus(true), 4000);
+    const timer = setInterval(() => loadStatus(true), 1500);
     return () => clearInterval(timer);
   }, []);
 
@@ -2002,6 +2002,39 @@ function SystemUpdateAdmin() {
     FAILED: 'Falhou'
   };
 
+  const stateProgress = {
+    IDLE: 0,
+    QUEUED: 2,
+    PREPARING: 5,
+    BACKUP: 15,
+    UPDATING_CODE: 30,
+    DEPENDENCIES: 45,
+    DATABASE: 58,
+    BUILDING: 70,
+    PUBLISHING: 85,
+    HEALTHCHECK: 95,
+    SUCCESS: 100,
+    FAILED: 0
+  };
+
+  const updateSteps = [
+    { state: 'BACKUP', label: 'Backup', progress: 15 },
+    { state: 'UPDATING_CODE', label: 'Código', progress: 30 },
+    { state: 'DEPENDENCIES', label: 'Dependências', progress: 45 },
+    { state: 'DATABASE', label: 'Banco', progress: 58 },
+    { state: 'BUILDING', label: 'Build', progress: 70 },
+    { state: 'PUBLISHING', label: 'Publicação', progress: 85 },
+    { state: 'HEALTHCHECK', label: 'Health check', progress: 95 },
+    { state: 'SUCCESS', label: 'Concluído', progress: 100 }
+  ];
+
+  const statusProgress = Number(info?.status?.progress);
+  const progress = Number.isFinite(statusProgress)
+    ? Math.max(0, Math.min(100, statusProgress))
+    : (stateProgress[state] ?? 0);
+  const failedStage = info?.status?.previousState || null;
+  const isUpdating = !['IDLE', 'SUCCESS', 'FAILED'].includes(state);
+
   return (
     <div>
       <div className="pageHeader">
@@ -2035,6 +2068,92 @@ function SystemUpdateAdmin() {
           <span>{info?.status?.message || 'Nenhuma atualização em processamento.'}</span>
         </div>
       </div>
+
+      {state !== 'IDLE' && (
+        <div className="card">
+          <div className="pageHeader">
+            <div>
+              <h2 style={{ margin: 0 }}>Progresso da atualização</h2>
+              <p style={{ marginBottom: 0 }}>
+                {stateLabels[state] || state} · atualização automática do status.
+              </p>
+            </div>
+            <strong style={{ fontSize: 28 }}>{progress}%</strong>
+          </div>
+
+          <div
+            style={{
+              width: '100%',
+              height: 14,
+              borderRadius: 999,
+              overflow: 'hidden',
+              background: 'rgba(148, 163, 184, 0.25)',
+              margin: '14px 0 18px'
+            }}
+          >
+            <div
+              style={{
+                width: `${progress}%`,
+                height: '100%',
+                borderRadius: 999,
+                transition: 'width 400ms ease',
+                background: state === 'FAILED'
+                  ? '#dc2626'
+                  : state === 'SUCCESS'
+                    ? '#16a34a'
+                    : '#2563eb'
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {updateSteps.map((step) => {
+              const active = state === step.state || (state === 'FAILED' && failedStage === step.state);
+              const done = state === 'SUCCESS' || progress > step.progress || (progress >= step.progress && !active && state !== 'FAILED');
+              return (
+                <span
+                  key={step.state}
+                  style={{
+                    padding: '7px 10px',
+                    borderRadius: 999,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    border: active ? '1px solid #2563eb' : '1px solid rgba(148, 163, 184, 0.35)',
+                    background: active
+                      ? (state === 'FAILED' ? 'rgba(220, 38, 38, 0.12)' : 'rgba(37, 99, 235, 0.12)')
+                      : done
+                        ? 'rgba(22, 163, 74, 0.12)'
+                        : 'transparent'
+                  }}
+                >
+                  {done ? '✓ ' : active ? '● ' : ''}{step.label}
+                </span>
+              );
+            })}
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <strong>{info?.status?.message || 'Processando atualização.'}</strong>
+            {info?.status?.updatedAt && (
+              <div><small>Última atualização: {new Date(info.status.updatedAt).toLocaleString('pt-BR')}</small></div>
+            )}
+          </div>
+
+          {state === 'FAILED' && (
+            <div className="formError" style={{ marginTop: 14 }}>
+              <strong>Atualização interrompida.</strong>{' '}
+              {failedStage ? `Etapa: ${stateLabels[failedStage] || failedStage}. ` : ''}
+              {info?.status?.message || 'Consulte o log do atualizador no servidor.'}
+            </div>
+          )}
+
+          {isUpdating && (
+            <div className="formNotice" style={{ marginTop: 14 }}>
+              Não feche nem reinicie o servidor durante esta etapa. Esta tela consulta o andamento automaticamente a cada poucos segundos.
+            </div>
+          )}
+        </div>
+      )}
 
       {!info?.updaterReady && (
         <div className="formNotice">

@@ -335,6 +335,8 @@ function requestInstall(id, user) {
     state: 'QUEUED',
     updateId: metadata.id,
     version: metadata.manifest.version,
+    progress: 2,
+    previousState: null,
     message: 'Atualização enfileirada e aguardando o agente do servidor.',
     updatedAt: new Date().toISOString()
   });
